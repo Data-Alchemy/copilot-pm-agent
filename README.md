@@ -1,7 +1,7 @@
 # PM Agent — Jira & Azure DevOps for VS Code
 
 [![CI](https://github.com/Data-Alchemy/copilot-pm-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Data-Alchemy/copilot-pm-agent/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/Data-Alchemy/pm-agent/releases)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/Data-Alchemy/copilot-pm-agent/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 With the PM Agent extension, you can manage Jira and Azure DevOps work items directly from Visual Studio Code. Create tickets, update statuses, assign tasks, track sprints, and migrate work items between platforms — all without leaving your editor. PM Agent streamlines your development workflow by keeping project management in the same application you use to write code.
@@ -239,7 +239,7 @@ Then reinstall the extension with `code --install-extension pm-agent-0.5.0.vsix 
 
 To report a bug or request a feature:
 
-1. Visit [github.com/Data-Alchemy/pm-agent/issues](https://github.com/Data-Alchemy/copilot-pm-agent/issues)
+1. Visit [github.com/Data-Alchemy/copilot-pm-agent/issues](https://github.com/Data-Alchemy/copilot-pm-agent/issues)
 2. Click **New Issue** and select Bug Report or Feature Request.
 3. Enter the details and submit.
 
