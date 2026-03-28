@@ -15,68 +15,73 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Extract version from tag
-        id: version
-        run: |
-          TAG="${{ github.event.release.tag_name }}"
-          VERSION="${TAG#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Version from tag: $VERSION"
-
-      - name: Bump package.json version
-        run: |
-          # Use node to directly write the version — guaranteed to work
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = '${{ steps.version.outputs.version }}';
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-            console.log('package.json version set to: ' + pkg.version);
-          "
-
-      - name: Verify version
-        run: node -p "'Version in package.json: ' + require('./package.json').version"
-
       - name: Install dependencies
         run: npm install
 
+      - name: Extract version from tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          echo "Release tag: $TAG"
+          echo "Package version: $VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Set version in package.json
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = process.env.VERSION;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "package.json version: $(node -p "require('./package.json').version")"
+
       - name: Compile TypeScript
-        run: npm run compile
+        run: npx tsc -p ./
 
       - name: Run post-compile
-        run: npm run inject-wizard
+        run: node scripts/inject-wizard.js
 
       - name: Run tests
-        run: npm test
+        run: npx jest
+
+      - name: Remove old VSIX files
+        run: rm -f *.vsix
 
       - name: Package VSIX
-        run: npx @vscode/vsce package --no-dependencies
+        run: npx @vscode/vsce package --no-dependencies --no-update-package-json
 
-      - name: Publish pre-built VSIX to Marketplace
+      - name: Verify VSIX
         run: |
-          # Publish the already-packaged VSIX directly — skips prepublish
-          VSIX=$(ls *.vsix | head -1)
-          echo "Publishing: $VSIX"
+          VSIX=$(ls *.vsix)
+          echo "Built: $VSIX"
+
+      - name: Commit VSIX and version bump to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json *.vsix
+          git diff --cached --quiet || git commit -m "release: v${{ env.VERSION }} [skip ci]"
+          git push origin main
+
+      - name: Publish to VS Code Marketplace
+        run: |
+          VSIX=$(ls *.vsix)
           npx @vscode/vsce publish --packagePath "$VSIX" -p ${{ secrets.VSCE_PAT }}
 
       - name: Upload VSIX to GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: "*.vsix"
-
-      - name: Commit version bump back to main
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json 2>/dev/null || git add package.json
-          git diff --cached --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }} [skip ci]"
-          git push origin HEAD:main || true
 
       - name: Generate changelog
         id: changelog
