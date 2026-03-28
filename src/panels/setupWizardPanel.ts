@@ -109,6 +109,58 @@ export class SetupWizardPanel {
           case 'cancel':
             settle(undefined);
             break;
+          case 'requestAutoFetch': {
+            // The webview asks the extension host to auto-fetch projects
+            // using stored tokens — tokens never leave the extension host.
+            const secrets = context.secrets;
+            if (msg.platform === 'jira') {
+              const token = await secrets.get('pmAgent.jira.apiToken');
+              const baseUrl = String(pre.jiraBaseUrl ?? '').replace(/\/$/, '');
+              const email = String(pre.jiraEmail ?? '');
+              if (token && baseUrl && email) {
+                try {
+                  const auth = 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
+                  const headers: Record<string, string> = { Authorization: auth, Accept: 'application/json' };
+                  const allProjects: Array<{ key: string; name: string }> = [];
+                  const pageSize = 50;
+                  let startAt = 0;
+                  let total = Infinity;
+                  while (allProjects.length < total) {
+                    const qs = new URLSearchParams({ startAt: String(startAt), maxResults: String(pageSize) }).toString();
+                    const res = await globalThis.fetch(`${baseUrl}/rest/api/3/project/search?${qs}`, { headers });
+                    if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+                    const data: any = await res.json();
+                    const page = (data.values ?? []).map((p: any) => ({ key: p.key, name: p.name }));
+                    allProjects.push(...page);
+                    total = data.total ?? allProjects.length;
+                    startAt += page.length;
+                    if (allProjects.length % 100 === 0 && allProjects.length > 0) {
+                      panel.webview.postMessage({ type: 'jiraProjectCount', count: allProjects.length });
+                    }
+                    if (data.isLast || page.length === 0 || allProjects.length >= 2000) { break; }
+                  }
+                  panel.webview.postMessage({ type: 'jiraProjects', projects: allProjects, total: allProjects.length });
+                } catch (err) {
+                  panel.webview.postMessage({ type: 'jiraProjectsError', error: err instanceof Error ? err.message : String(err) });
+                }
+              }
+            } else if (msg.platform === 'ado') {
+              const token = await secrets.get('pmAgent.ado.personalAccessToken');
+              const orgUrl = String(pre.adoOrgUrl ?? '').replace(/\/$/, '');
+              if (token && orgUrl) {
+                try {
+                  const auth = 'Basic ' + Buffer.from(`:${token}`).toString('base64');
+                  const res = await globalThis.fetch(`${orgUrl}/_apis/projects?api-version=7.1`, { headers: { Authorization: auth, Accept: 'application/json' } });
+                  if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+                  const data: any = await res.json();
+                  panel.webview.postMessage({ type: 'adoProjects', projects: (data.value ?? []).map((p: any) => ({ name: p.name })) });
+                } catch (err) {
+                  panel.webview.postMessage({ type: 'adoProjectsError', error: err instanceof Error ? err.message : String(err) });
+                }
+              }
+            }
+            break;
+          }
         }
       });
 
@@ -252,13 +304,13 @@ function getScript(safeJson: string): string {
     'if(pre.jiraBaseUrl) document.getElementById("jira-url").value = pre.jiraBaseUrl;',
     'if(pre.jiraEmail) document.getElementById("jira-email").value = pre.jiraEmail;',
     'if(pre.adoOrgUrl) document.getElementById("ado-org").value = pre.adoOrgUrl;',
-    'if(pre._jiraToken){ var jt=document.getElementById("jira-token"); jt.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; jt.dataset.hasStored="1"; jt.addEventListener("input",function(){ jt.dataset.hasStored="0"; }); }',
-    'if(pre._adoToken){ var at=document.getElementById("ado-token"); at.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; at.dataset.hasStored="1"; at.addEventListener("input",function(){ at.dataset.hasStored="0"; }); }',
+    'if(pre._hasJiraToken){ var jt=document.getElementById("jira-token"); jt.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; jt.dataset.hasStored="1"; jt.addEventListener("input",function(){ jt.dataset.hasStored="0"; }); }',
+    'if(pre._hasAdoToken){ var at=document.getElementById("ado-token"); at.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; at.dataset.hasStored="1"; at.addEventListener("input",function(){ at.dataset.hasStored="0"; }); }',
     'switchTab(pre.platform === "azuredevops" ? "ado" : "jira");',
     '',
-    '// Auto-fetch if we have stored creds',
-    'if(pre._jiraToken && pre.jiraBaseUrl && pre.jiraEmail){ setStatus("jira","","Loading projects..."); document.getElementById("jira-fetch-btn").disabled=true; vscode.postMessage({type:"fetchJiraProjects",baseUrl:pre.jiraBaseUrl,email:pre.jiraEmail,token:pre._jiraToken,query:""}); }',
-    'if(pre._adoToken && pre.adoOrgUrl){ setStatus("ado","ok","Loading projects..."); document.getElementById("ado-fetch-btn").disabled=true; vscode.postMessage({type:"fetchAdoProjects",orgUrl:pre.adoOrgUrl,token:pre._adoToken}); }',
+    '// Auto-fetch projects using stored tokens (tokens stay in extension host)',
+    'if(pre._hasJiraToken && pre.jiraBaseUrl && pre.jiraEmail){ setStatus("jira","","Loading projects..."); document.getElementById("jira-fetch-btn").disabled=true; vscode.postMessage({type:"requestAutoFetch",platform:"jira"}); }',
+    'if(pre._hasAdoToken && pre.adoOrgUrl){ setStatus("ado","ok","Loading projects..."); document.getElementById("ado-fetch-btn").disabled=true; vscode.postMessage({type:"requestAutoFetch",platform:"ado"}); }',
     '',
     'window.addEventListener("message", onMessage);',
     '',
@@ -271,7 +323,7 @@ function getScript(safeJson: string): string {
     '',
     'function fetchAdoProjects(){ var orgUrl=document.getElementById("ado-org").value.trim(); var token=document.getElementById("ado-token").value.trim(); if(!orgUrl||!token){setStatus("ado","error","Enter the Organisation URL and PAT first.");return;} setStatus("ado","","Loading projects..."); document.getElementById("ado-fetch-btn").disabled=true; vscode.postMessage({type:"fetchAdoProjects",orgUrl:orgUrl,token:token}); }',
     '',
-    'function fetchJiraProjects(){ var baseUrl=document.getElementById("jira-url").value.trim(); var email=document.getElementById("jira-email").value.trim(); var jtEl=document.getElementById("jira-token"); var token=jtEl.dataset.hasStored==="1"?(pre._jiraToken||""):jtEl.value.trim(); if(!baseUrl||!email||!token){setStatus("jira","error","Enter the URL, email and token first, then click Load.");return;} document.getElementById("jira-project-list").style.display="block"; document.getElementById("jira-project-search-row").style.display="block"; setStatus("jira","","Loading all projects..."); document.getElementById("jira-fetch-btn").disabled=true; vscode.postMessage({type:"fetchJiraProjects",baseUrl:baseUrl,email:email,token:token}); }',
+    'function fetchJiraProjects(){ var baseUrl=document.getElementById("jira-url").value.trim(); var email=document.getElementById("jira-email").value.trim(); var jtEl=document.getElementById("jira-token"); if(jtEl.dataset.hasStored==="1"){ if(!baseUrl||!email){setStatus("jira","error","Enter the URL and email first.");return;} document.getElementById("jira-project-list").style.display="block"; document.getElementById("jira-project-search-row").style.display="block"; setStatus("jira","","Loading all projects..."); document.getElementById("jira-fetch-btn").disabled=true; vscode.postMessage({type:"requestAutoFetch",platform:"jira"}); return; } var token=jtEl.value.trim(); if(!baseUrl||!email||!token){setStatus("jira","error","Enter the URL, email and token first, then click Load.");return;} document.getElementById("jira-project-list").style.display="block"; document.getElementById("jira-project-search-row").style.display="block"; setStatus("jira","","Loading all projects..."); document.getElementById("jira-fetch-btn").disabled=true; vscode.postMessage({type:"fetchJiraProjects",baseUrl:baseUrl,email:email,token:token}); }',
     '',
     'function clearAdoProjects(){ var sel=document.getElementById("ado-project"); sel.innerHTML=\'<option value="">\\u2014 Select a project \\u2014</option>\'; sel.style.display="none"; setStatus("ado","",""); document.getElementById("ado-fetch-btn").disabled=false; }',
     '',
@@ -295,7 +347,7 @@ function getScript(safeJson: string): string {
     '    var row=document.createElement("div");',
     '    row.className="proj-item";',
     '    row.setAttribute("data-key",p.key);',
-    '    row.innerHTML="<strong>"+p.key+"</strong> \\u2014 "+p.name;',
+    '    row.innerHTML="<strong>"+p.key.replace(/</g,"&lt;")+"</strong> \\u2014 "+p.name.replace(/</g,"&lt;");',
     '    if(p.key===currentVal){ row.style.background="var(--vscode-list-activeSelectionBackground,#094771)"; row.style.color="var(--vscode-list-activeSelectionForeground,#fff)"; row.style.fontWeight="600"; }',
     '    row.addEventListener("click",function(){selectJiraProject(row, true);});',
     '    list.appendChild(row);',

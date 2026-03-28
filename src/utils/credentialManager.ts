@@ -221,11 +221,10 @@ export class CredentialManager {
    adoProject: config.get<string>('azureDevOps.project') || '',
  };
 
- // Pass token flags — the wizard shows •••••••• and sets hasStored=1
- // so Save knows to keep the existing token when the user doesn't change it.
- // The actual token value is passed so the wizard can auto-fetch projects.
- if (storedJiraToken) { existing._jiraToken = storedJiraToken; }
- if (storedAdoToken)  { existing._adoToken  = storedAdoToken; }
+ // Pass boolean flags so the wizard knows tokens exist (shows sentinel)
+ // but NEVER pass the actual token values into the webview HTML.
+ if (storedJiraToken) { existing._hasJiraToken = true; }
+ if (storedAdoToken)  { existing._hasAdoToken  = true; }
 
  const result = await SetupWizardPanel.show(this.context, existing);
  if (!result) { return false; }
