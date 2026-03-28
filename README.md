@@ -239,7 +239,7 @@ Then reinstall the extension with `code --install-extension pm-agent-0.5.0.vsix 
 
 To report a bug or request a feature:
 
-1. Visit [github.com/Data-Alchemy/pm-agent/issues](https://github.com/Data-Alchemy/pm-agent/issues)
+1. Visit [github.com/Data-Alchemy/pm-agent/issues](https://github.com/Data-Alchemy/copilot-pm-agent/issues)
 2. Click **New Issue** and select Bug Report or Feature Request.
 3. Enter the details and submit.
 
