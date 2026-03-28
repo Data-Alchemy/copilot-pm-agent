@@ -1,6 +1,6 @@
 # PM Agent — Jira & Azure DevOps for VS Code
 
-[![CI](https://github.com/Data-Alchemy/pm-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Data-Alchemy/pm-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/Data-Alchemy/copilot-pm-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Data-Alchemy/copilot-pm-agent/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/Data-Alchemy/pm-agent/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
