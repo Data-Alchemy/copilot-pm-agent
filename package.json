@@ -1,6 +1,6 @@
 {
-  "name": "pm-agent",
-  "displayName": "PM Agent",
+  "name": "copilot-pm-agent",
+  "displayName": "Copilot PM Agent",
   "description": "VS Code Agent that lets you open, estimate, and assign Jira & Azure DevOps work items via chat",
   "version": "0.5.0",
   "publisher": "DataAlchemy",
@@ -268,13 +268,13 @@
     "name": "Sebastian Hansen",
     "url": "https://github.com/Data-Alchemy"
   },
-  "homepage": "https://github.com/Data-Alchemy",
+  "homepage": "https://github.com/Data-Alchemy/copilot-pm-agent",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Data-Alchemy/pm-agent"
+    "url": "https://github.com/Data-Alchemy/copilot-pm-agent"
   },
   "bugs": {
-    "url": "https://github.com/Data-Alchemy/pm-agent/issues"
+    "url": "https://github.com/Data-Alchemy/copilot-pm-agent/issues"
   },
   "icon": "media/pm-agent-icon.png"
 }
