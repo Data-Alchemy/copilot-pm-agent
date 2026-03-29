@@ -221,10 +221,18 @@ export class JiraProvider {
     // Each field is set individually so one failure doesn't block the others.
     const postFields: Array<[string, unknown]> = [];
 
-    // Story points
+    // Story points — try discovered field first, then common field IDs as fallback
     if (input.storyPoints !== undefined) {
       const spf = await this.getStoryPointsField();
-      if (spf) { postFields.push([spf, input.storyPoints]); }
+      if (spf) {
+        postFields.push([spf, input.storyPoints]);
+      } else {
+        // Field discovery failed — try each common field ID individually.
+        // One of these will work; the others will fail silently in the loop below.
+        for (const fallback of ['customfield_10016', 'customfield_10028', 'customfield_10014', 'story_points']) {
+          postFields.push([fallback, input.storyPoints]);
+        }
+      }
     }
 
     // Sprint
@@ -306,7 +314,15 @@ export class JiraProvider {
     if (input.title)                   { fields.summary = input.title; }
     if (input.storyPoints !== undefined) {
       const spField2 = await this.getStoryPointsField();
-      if (spField2) { fields[spField2] = input.storyPoints; }
+      if (spField2) {
+        fields[spField2] = input.storyPoints;
+      } else {
+        // Try all common field IDs — the PUT will ignore unknown ones
+        fields['customfield_10016'] = input.storyPoints;
+        fields['customfield_10028'] = input.storyPoints;
+        fields['customfield_10014'] = input.storyPoints;
+        fields['story_points']      = input.storyPoints;
+      }
     }
     if (input.priority)                { fields.priority = { name: input.priority }; }
     if (input.labels)                  { fields.labels   = input.labels; }

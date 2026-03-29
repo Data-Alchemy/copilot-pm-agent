@@ -152,7 +152,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
         case 'move':     { this._sendTyping(false); await this.runner.move();     this._send('bot', 'Items moved.'); return; }
         case 'debug':    { this._sendTyping(false); await this.runner.debug();    this._send('bot', 'Diagnostics written to output channel.'); return; }
         case 'create':   { this._sendTyping(false); await this.runner.create();   this._send('bot', 'Done. Type /list to see your items.'); return; }
-        case 'migrate':  { this._sendTyping(false); await this.runner.migrate();  this._send('bot', 'Migration complete.'); return; }
+        case 'migrate':  { this._sendTyping(false); await this.runner.migrate(); this._send('bot', this.runner.lastMigrateResult || 'Migration complete.'); return; }
         case 'parent':   { this._sendTyping(false); await this.runner.parent();   this._send('bot', 'Parent link updated.'); return; }
         case 'setuser':  { this._sendTyping(false); await vscode.commands.executeCommand('pm-agent.setDefaultUser'); this._send('bot', 'Default user updated.'); return; }
         case 'setupai':  { this._sendTyping(false); await vscode.commands.executeCommand('pm-agent.configureAi'); this._send('bot', 'AI provider configured.'); return; }

@@ -263,7 +263,7 @@ export class ChatPanel {
         case 'migrate': {
           this.sendTyping(false);
           await this.runner.migrate();
-          this.send('bot', 'Migration complete.');
+          this.send('bot', this.runner.lastMigrateResult || 'Migration complete.');
           return;
         }
 

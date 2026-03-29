@@ -947,6 +947,8 @@ export class CommandRunner {
 
     // Run migration
     let moved = 0, failed = 0;
+    const createdKeys: string[] = [];
+    const failedKeys: string[] = [];
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Migrating to ${dstName}...` },
       async progress => {
@@ -972,11 +974,15 @@ export class CommandRunner {
               }
             }
 
+            // Ensure description is non-empty for ADO
+            let desc = fields.has('description') ? cleanDesc : undefined;
+            if (!desc && direction === 'jira-to-ado') { desc = full.title; }
+
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const destItem: import('./types').WorkItem = await (dstProvider as any).createWorkItem({
               type:               full.type,
               title:              full.title,
-              description:        fields.has('description') ? cleanDesc : undefined,
+              description:        desc,
               acceptanceCriteria: fields.has('ac') && cleanAc ? cleanAc : undefined,
               storyPoints:        fields.has('points') ? (full.storyPoints ?? full.effort) : undefined,
               priority:           fields.has('priority') ? full.priority : undefined,
@@ -996,14 +1002,37 @@ export class CommandRunner {
                 ).catch(() => {});
               }
             }
+            createdKeys.push(`[${src.key}](${full.url}) -> [${destItem.key}](${destItem.url})`);
             moved++;
-          } catch { failed++; }
+          } catch (err) {
+            failedKeys.push(`${src.key}: ${err instanceof Error ? err.message : String(err)}`);
+            failed++;
+          }
         }
       }
     );
+
+    // Store results so the chat panels can read them
+    const lines = [];
+    lines.push(`**Migration complete:** ${moved} created, ${failed} failed.`);
+    if (createdKeys.length) {
+      lines.push('');
+      for (const k of createdKeys) { lines.push(`- ${k}`); }
+    }
+    if (failedKeys.length) {
+      lines.push('');
+      lines.push('**Failed:**');
+      for (const k of failedKeys) { lines.push(`- ${k}`); }
+    }
+    const summary = lines.join('\n');
+    this._lastMigrateResult = summary;
 
     vscode.window.showInformationMessage(
       `Migration complete: ${moved} created, ${failed} failed.`
     );
   }
+
+  /** Last migration result — read by chat panels */
+  private _lastMigrateResult = '';
+  get lastMigrateResult(): string { return this._lastMigrateResult; }
 }

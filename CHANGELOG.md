@@ -8,10 +8,6 @@ Release changelogs are auto-generated from pull request labels via GitHub Action
 
 ---
 
-## [0.1.1] - 2026-03-29
-
-See [release notes](https://github.com/Data-Alchemy/copilot-pm-agent/releases/tag/v0.1.1).
-
 ## [0.5.0] - 2026-03-28
 
 ### Added
