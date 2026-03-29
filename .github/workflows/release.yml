@@ -133,11 +133,25 @@ jobs:
           echo "package.json: $(node -p "require('./package.json').version")"
 
           # Update CHANGELOG
-          DATE=$(date +%Y-%m-%d)
-          if ! grep -q "\[$VERSION\]" CHANGELOG.md; then
-            ENTRY="## [$VERSION] - $DATE\n\nSee [release notes](https://github.com/Data-Alchemy/copilot-pm-agent/releases/tag/v$VERSION).\n"
-            sed -i "0,/^## \[/s//$(printf '%s\n' "$ENTRY")## [/" CHANGELOG.md
-          fi
+          node -e "
+            const fs = require('fs');
+            const version = '$VERSION';
+            const date = new Date().toISOString().split('T')[0];
+            let cl = fs.readFileSync('CHANGELOG.md', 'utf8');
+            if (!cl.includes('[' + version + ']')) {
+              const entry = '## [' + version + '] - ' + date + '\n\nSee [release notes](https://github.com/Data-Alchemy/copilot-pm-agent/releases/tag/v' + version + ').\n\n';
+              const marker = cl.indexOf('## [');
+              if (marker >= 0) {
+                cl = cl.slice(0, marker) + entry + cl.slice(marker);
+              } else {
+                cl += '\n' + entry;
+              }
+              fs.writeFileSync('CHANGELOG.md', cl);
+              console.log('CHANGELOG.md: added ' + version);
+            } else {
+              console.log('CHANGELOG.md: ' + version + ' already exists');
+            }
+          "
 
       - name: Compile
         run: npx tsc -p ./
