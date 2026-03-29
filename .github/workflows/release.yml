@@ -1,22 +1,122 @@
 name: Release
 
+# Trigger manually OR on push to main (auto-release when commits warrant it)
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Force version bump type (leave empty for auto-detect from commits)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - patch
+          - minor
+          - major
+  push:
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
-  publish:
-    name: Build, Test & Publish
+  check-release:
+    name: Check if release needed
     runs-on: ubuntu-latest
+    # Skip commits from the bot to avoid infinite loops
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      bump_type: ${{ steps.check.outputs.bump_type }}
+      new_version: ${{ steps.check.outputs.new_version }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: main
+          fetch-depth: 0
+
+      - name: Determine version bump
+        id: check
+        run: |
+          # Get current version from package.json
+          CURRENT=$(node -p "require('./package.json').version")
+          echo "Current version: $CURRENT"
+
+          # If manually triggered with a bump type, use that
+          FORCED_BUMP="${{ github.event.inputs.bump }}"
+          if [ -n "$FORCED_BUMP" ]; then
+            BUMP="$FORCED_BUMP"
+            echo "Forced bump: $BUMP"
+          else
+            # Auto-detect from commits since last tag
+            LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [ -z "$LAST_TAG" ]; then
+              RANGE="HEAD"
+            else
+              RANGE="${LAST_TAG}..HEAD"
+            fi
+
+            echo "Scanning commits in range: $RANGE"
+            COMMITS=$(git log $RANGE --pretty=format:"%s" 2>/dev/null || echo "")
+
+            if [ -z "$COMMITS" ]; then
+              echo "No new commits since last tag"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Commits:"
+            echo "$COMMITS"
+
+            # Detect bump type from conventional commits
+            BUMP=""
+            if echo "$COMMITS" | grep -qiE "^(feat|fix|refactor|perf|build|ci|docs|style|test|chore)(\(.+\))?!:"; then
+              BUMP="major"
+            elif echo "$COMMITS" | grep -qiE "^BREAKING CHANGE"; then
+              BUMP="major"
+            elif echo "$COMMITS" | grep -qiE "^feat(\(.+\))?:"; then
+              BUMP="minor"
+            elif echo "$COMMITS" | grep -qiE "^(fix|perf)(\(.+\))?:"; then
+              BUMP="patch"
+            elif echo "$COMMITS" | grep -qiE "^(refactor|build|ci|docs|style|test|chore)(\(.+\))?:"; then
+              BUMP="patch"
+            fi
+
+            if [ -z "$BUMP" ]; then
+              echo "No conventional commits found — skipping release"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Auto-detected bump: $BUMP"
+          fi
+
+          # Calculate new version
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+          echo "New version: $NEW_VERSION"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "bump_type=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Build, Test & Publish
+    runs-on: ubuntu-latest
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
@@ -27,23 +127,27 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Extract version from tag
+      - name: Set version
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          VERSION="${TAG#v}"
-          echo "Release tag: $TAG"
-          echo "Package version: $VERSION"
+          VERSION="${{ needs.check-release.outputs.new_version }}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Set version in package.json
-        run: |
+          # Update package.json
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = process.env.VERSION;
+            pkg.version = '$VERSION';
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
           echo "package.json version: $(node -p "require('./package.json').version")"
+
+          # Update CHANGELOG.md
+          DATE=$(date +%Y-%m-%d)
+          if ! grep -q "\[$VERSION\]" CHANGELOG.md; then
+            ENTRY="## [$VERSION] - $DATE\n\nSee [release notes](https://github.com/Data-Alchemy/copilot-pm-agent/releases/tag/v$VERSION).\n"
+            sed -i "0,/^## \[/s//$(printf '%s\n' "$ENTRY")## [/" CHANGELOG.md
+            echo "CHANGELOG.md updated"
+          fi
 
       - name: Compile TypeScript
         run: npx tsc -p ./
@@ -60,46 +164,29 @@ jobs:
       - name: Package VSIX
         run: npx @vscode/vsce package --no-dependencies --no-update-package-json
 
-      - name: Verify VSIX
+      - name: Verify
         run: |
-          VSIX=$(ls *.vsix)
-          echo "Built: $VSIX"
+          echo "Version: ${{ env.VERSION }}"
+          echo "VSIX: $(ls *.vsix)"
 
-      - name: Commit VSIX and version bump to main
+      - name: Commit and tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json *.vsix
-          git diff --cached --quiet || git commit -m "release: v${{ env.VERSION }} [skip ci]"
-          git push origin main
+          git add package.json CHANGELOG.md *.vsix
+          git commit -m "release: v${{ env.VERSION }} [skip ci]"
+          git tag "v${{ env.VERSION }}"
+          git push origin main --tags
 
       - name: Publish to VS Code Marketplace
         run: |
           VSIX=$(ls *.vsix)
           npx @vscode/vsce publish --packagePath "$VSIX" -p ${{ secrets.VSCE_PAT }}
 
-      - name: Upload VSIX to GitHub release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
+          name: v${{ env.VERSION }}
           files: "*.vsix"
-
-      - name: Generate changelog
-        id: changelog
-        uses: mikepenz/release-changelog-builder-action@v4
-        with:
-          configurationJson: |
-            {
-              "categories": [
-                { "title": "## Features", "labels": ["feature", "enhancement"] },
-                { "title": "## Bug Fixes", "labels": ["bug", "fix"] },
-                { "title": "## Other", "labels": [] }
-              ],
-              "template": "#{{CHANGELOG}}\n\n**Full Changelog**: #{{RELEASE_DIFF}}"
-            }
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update release notes
-        uses: softprops/action-gh-release@v2
-        with:
-          body: ${{ steps.changelog.outputs.changelog }}
+          generate_release_notes: true
