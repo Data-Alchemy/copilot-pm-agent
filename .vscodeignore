@@ -16,3 +16,5 @@ install.sh
 install.bat
 *.sh
 *.bat
+*.vsix
+package-lock.json

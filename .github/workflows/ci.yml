@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   build-and-test:
@@ -65,8 +66,8 @@ jobs:
             console.log('Package integrity: OK');
           "
 
-  package:
-    name: Package VSIX
+  package-preview:
+    name: Package Preview
     runs-on: ubuntu-latest
     needs: build-and-test
 
@@ -82,12 +83,40 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Package VSIX
-        run: npx @vscode/vsce package --no-dependencies
+      - name: Compile
+        run: npm run compile
 
-      - name: Upload VSIX artifact
+      - name: Post-compile
+        run: npm run inject-wizard
+
+      - name: Package preview VSIX
+        run: npx @vscode/vsce package --no-dependencies --no-update-package-json
+
+      - name: Delete previous preview artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifactName = 'pm-agent-preview';
+            const { data: { artifacts } } = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+              name: artifactName,
+            });
+            for (const artifact of artifacts) {
+              if (!artifact.expired) {
+                console.log(`Deleting old artifact: ${artifact.name} (id: ${artifact.id})`);
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id,
+                });
+              }
+            }
+
+      - name: Upload preview VSIX
         uses: actions/upload-artifact@v4
         with:
-          name: pm-agent-vsix
+          name: pm-agent-preview
           path: "*.vsix"
-          retention-days: 30
+          retention-days: 14
