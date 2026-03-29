@@ -1,59 +1,136 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Force version bump (leave empty for auto-detect)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
 
 jobs:
-  publish:
-    name: Publish to Marketplace
+  release:
+    name: Release
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Skip bot commits
+        id: guard
+        run: |
+          MSG=$(git log -1 --pretty=format:"%s")
+          if echo "$MSG" | grep -q "\[skip ci\]"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine version bump
+        if: steps.guard.outputs.skip != 'true'
+        id: bump
+        run: |
+          CURRENT=$(node -p "require('./package.json').version")
+          echo "Current: $CURRENT"
+
+          FORCED="${{ github.event.inputs.bump }}"
+          if [ -n "$FORCED" ]; then
+            BUMP="$FORCED"
+          else
+            LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [ -z "$LAST_TAG" ]; then
+              RANGE="HEAD"
+            else
+              RANGE="${LAST_TAG}..HEAD"
+            fi
+
+            COMMITS=$(git log $RANGE --pretty=format:"%s" 2>/dev/null)
+            if [ -z "$COMMITS" ]; then
+              echo "No commits since last tag"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Commits since ${LAST_TAG:-beginning}:"
+            echo "$COMMITS"
+
+            BUMP=""
+            echo "$COMMITS" | grep -qiE "^.+!:" && BUMP="major"
+            [ -z "$BUMP" ] && echo "$COMMITS" | grep -qiE "^feat(\(.+\))?:" && BUMP="minor"
+            [ -z "$BUMP" ] && echo "$COMMITS" | grep -qiE "^(fix|perf|refactor|build|ci|docs|style|test|chore)(\(.+\))?:" && BUMP="patch"
+
+            if [ -z "$BUMP" ]; then
+              echo "No conventional commits"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          IFS='.' read -r MAJ MIN PAT <<< "$CURRENT"
+          case "$BUMP" in
+            major) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
+            minor) MIN=$((MIN+1)); PAT=0 ;;
+            patch) PAT=$((PAT+1)) ;;
+          esac
+          VERSION="${MAJ}.${MIN}.${PAT}"
+
+          echo "$BUMP: $CURRENT -> $VERSION"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v4
+        if: steps.bump.outputs.should_release == 'true'
         with:
           node-version: 20
 
-      - run: npm install
+      - name: Install
+        if: steps.bump.outputs.should_release == 'true'
+        run: npm install
 
-      - name: Set version from tag
+      - name: Set version
+        if: steps.bump.outputs.should_release == 'true'
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          VERSION="${TAG#v}"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Tag: $TAG → Version: $VERSION"
+          V="${{ steps.bump.outputs.version }}"
+          echo "VERSION=$V" >> "$GITHUB_ENV"
 
-          # package.json
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
-            pkg.version = '$VERSION';
+            pkg.version = '$V';
             fs.writeFileSync('package.json', JSON.stringify(pkg,null,2)+'\n');
           "
 
-          # package-lock.json
           if [ -f package-lock.json ]; then
             node -e "
               const fs = require('fs');
               const l = JSON.parse(fs.readFileSync('package-lock.json','utf8'));
-              l.version = '$VERSION';
-              if (l.packages && l.packages['']) l.packages[''].version = '$VERSION';
+              l.version = '$V';
+              if (l.packages && l.packages['']) l.packages[''].version = '$V';
               fs.writeFileSync('package-lock.json', JSON.stringify(l,null,2)+'\n');
             "
           fi
 
-          # CHANGELOG.md
           node -e "
             const fs = require('fs');
-            const v='$VERSION', d=new Date().toISOString().split('T')[0];
+            const v='$V', d=new Date().toISOString().split('T')[0];
             let c = fs.readFileSync('CHANGELOG.md','utf8');
             if (!c.includes('['+v+']')) {
               const e = '## ['+v+'] - '+d+'\n\nSee [release notes](https://github.com/Data-Alchemy/copilot-pm-agent/releases/tag/v'+v+').\n\n';
@@ -63,32 +140,46 @@ jobs:
             }
           "
 
-          echo "package.json: $(node -p "require('./package.json').version")"
+          echo "Version set: $(node -p "require('./package.json').version")"
 
-      - run: npx tsc -p ./
-      - run: node scripts/inject-wizard.js
-      - run: npx jest
+      - name: Compile
+        if: steps.bump.outputs.should_release == 'true'
+        run: npx tsc -p ./
 
-      - name: Package VSIX
+      - name: Post-compile
+        if: steps.bump.outputs.should_release == 'true'
+        run: node scripts/inject-wizard.js
+
+      - name: Test
+        if: steps.bump.outputs.should_release == 'true'
+        run: npx jest
+
+      - name: Package
+        if: steps.bump.outputs.should_release == 'true'
         run: |
           rm -f *.vsix
           npx @vscode/vsce package --no-dependencies --no-update-package-json
           echo "Built: $(ls *.vsix)"
 
       - name: Publish to Marketplace
+        if: steps.bump.outputs.should_release == 'true'
         run: |
           VSIX=$(ls *.vsix)
           npx @vscode/vsce publish --packagePath "$VSIX" -p ${{ secrets.VSCE_PAT }}
 
-      - name: Upload VSIX to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: "*.vsix"
-
-      - name: Commit version bump to main
+      - name: Commit version bump
+        if: steps.bump.outputs.should_release == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json CHANGELOG.md
           git diff --cached --quiet || git commit -m "release: v${{ env.VERSION }} [skip ci]"
           git push origin main
+
+      - name: Create GitHub Release
+        if: steps.bump.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: v${{ env.VERSION }}
+          generate_release_notes: true
