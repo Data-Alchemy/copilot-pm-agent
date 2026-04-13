@@ -1,5 +1,6 @@
 # PM Agent — Jira & Azure DevOps for VS Code
 
+
 [![CI](https://github.com/Data-Alchemy/copilot-pm-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Data-Alchemy/copilot-pm-agent/actions/workflows/ci.yml)
 [![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/DataAlchemy.copilot-pm-agent?label=marketplace)](https://marketplace.visualstudio.com/items?itemName=DataAlchemy.copilot-pm-agent)
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/DataAlchemy.copilot-pm-agent)](https://marketplace.visualstudio.com/items?itemName=DataAlchemy.copilot-pm-agent)
