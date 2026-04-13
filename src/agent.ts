@@ -2059,6 +2059,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  { label: 'Assignee',             description: 'Will try to match by email',    field: 'assignee',    picked: false },
  { label: 'Labels / Tags',        description: 'Copied as-is',                 field: 'labels',      picked: true  },
  { label: 'Comments',             description: 'Copies up to 20 comments',      field: 'comments',    picked: false },
+ { label: 'Child Items',          description: 'Migrate subtasks/children and link to parent', field: 'children', picked: false },
  ];
 
  const fieldPicks = await vscode.window.showQuickPick(fieldOpts, {
@@ -2071,13 +2072,49 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  const fields = new Set(fieldPicks.map(f => f.field));
  fields.add('title'); // always copy title
 
+ // ── Type mapping ──────────────────────────────────────────────────
+ // Fetch destination types and let user confirm mapping
+ let dstTypes: string[] = [];
+ try {
+ dstTypes = await destProvider.getWorkItemTypes();
+ } catch {
+ dstTypes = direction === 'jira-to-ado'
+ ? ['Task', 'Bug', 'Epic', 'Feature', 'User Story', 'Product Backlog Item']
+ : ['Story', 'Task', 'Bug', 'Epic', 'Sub-task'];
+ }
+
+ const srcTypeNames = [...new Set(selectedItems.map(i => i.item.rawTypeName ?? cap(i.item.type)))];
+ const typeMap: Record<string, string> = {};
+ for (const srcType of srcTypeNames) {
+ const exact = dstTypes.find(d => d.toLowerCase() === srcType.toLowerCase());
+ type TQ = vscode.QuickPickItem & { rawType: string };
+ const typeOpts: TQ[] = dstTypes.map(t => ({
+ label: t,
+ description: t.toLowerCase() === srcType.toLowerCase() ? '(auto-matched)' : '',
+ rawType: t,
+ }));
+ if (exact) {
+ typeOpts.sort((a, b) => a.rawType === exact ? -1 : b.rawType === exact ? 1 : 0);
+ }
+ const picked = await vscode.window.showQuickPick<TQ>(typeOpts, {
+ title: `Map "${srcType}" → ${destName} type`,
+ placeHolder: exact
+ ? `"${srcType}" matched "${exact}" — press Enter to accept or pick a different type`
+ : `"${srcType}" has no match in ${destName} — choose a type`,
+ ignoreFocusOut: true
+ });
+ if (!picked) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
+ typeMap[srcType] = picked.rawType;
+ }
+
  // Confirm
  stream.markdown(
  `**Migration plan**\n\n` +
  `- **From:** ${sourceName}\n` +
  `- **To:** ${destName}\n` +
  `- **Items:** ${selectedItems.length}\n` +
- `- **Fields:** ${[...fields].join(', ')}\n\n` +
+ `- **Fields:** ${[...fields].join(', ')}\n` +
+ `- **Type mapping:** ${Object.entries(typeMap).map(([s,d]) => `${s} → ${d}`).join(', ')}\n\n` +
  `Proceed?`
  );
  const confirm = await vscode.window.showQuickPick(
@@ -2087,7 +2124,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  if (!confirm || confirm.value === 'no') { stream.markdown('_Cancelled._'); return { action: 'error' }; }
 
  // Migrate each item
- const created: Array<{ source: WorkItem; dest: WorkItem }> = [];
+ const created: Array<{ source: WorkItem; dest: WorkItem; children: Array<{ source: WorkItem; dest: WorkItem }> }> = [];
  const failed:  Array<{ key: string; error: string }> = [];
 
  for (const opt of selectedItems) {
@@ -2102,7 +2139,6 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  if (fields.has('assignee') && full.assignee?.email) {
  try {
  if (direction === 'jira-to-ado') {
- // ADO: look up by email
  const members = await destProvider.getProjectMembers();
  const match = members.find(m =>
  m.email?.toLowerCase() === full.assignee!.email?.toLowerCase() ||
@@ -2110,7 +2146,6 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  );
  assigneeId = match?.id;
  } else {
- // Jira: resolve via /user/search
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
  const resolved = await (destProvider as any).resolveUser?.(full.assignee.email);
  assigneeId = resolved?.id;
@@ -2122,12 +2157,20 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  const cleanDesc = (full.description ?? '').replace(/<[^>]+>/g, '').trim();
  const cleanAc   = (full.acceptanceCriteria as string | undefined ?? '').replace(/<[^>]+>/g, '').trim();
 
- // Build the input for destination
+ // Ensure description is non-empty for ADO
+ let desc = fields.has('description') ? cleanDesc : undefined;
+ if (!desc && direction === 'jira-to-ado') { desc = full.title; }
+
+ // Map the type
+ const srcTypeName = full.rawTypeName ?? cap(full.type);
+ const dstTypeName = typeMap[srcTypeName] ?? cap(full.type);
+
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
  const createInput: any = {
  type:               full.type,
+ rawTypeName:        dstTypeName,
  title:              full.title,
- description:        fields.has('description') ? cleanDesc : undefined,
+ description:        desc,
  acceptanceCriteria: fields.has('ac') && cleanAc ? cleanAc : undefined,
  storyPoints:        fields.has('points') ? (full.storyPoints ?? full.effort) : undefined,
  priority:           fields.has('priority') ? full.priority : undefined,
@@ -2147,26 +2190,78 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  }
  }
 
- // Add migration note as a comment on the destination
+ // Add migration note
  await destProvider.addComment(
  destItem.key,
  `Migrated from ${sourceName} — original: ${full.url}`
  ).catch(() => { /* ignore */ });
 
- created.push({ source: full, dest: destItem });
+ // Migrate child items if selected
+ const migratedChildren: Array<{ source: WorkItem; dest: WorkItem }> = [];
+ if (fields.has('children')) {
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ const children: WorkItem[] = await (sourceProvider as any).getChildItems?.(src.key).catch(() => []) ?? [];
+ if (children.length) {
+ stream.progress(`Copying ${children.length} child item(s) of ${src.key}...`);
+ for (const child of children) {
+ try {
+ const childFull = await sourceProvider.getWorkItem(child.key);
+ const childDesc = (childFull.description ?? '').replace(/<[^>]+>/g, '').trim();
+ const childAc   = ((childFull as any).acceptanceCriteria ?? '').replace(/<[^>]+>/g, '').trim();
+ const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
+ let childDstType = typeMap[childSrcType];
+ if (!childDstType) {
+ const match = dstTypes.find(d => d.toLowerCase() === childSrcType.toLowerCase());
+ childDstType = match ?? dstTypeName;
+ }
+ let childDescFinal = fields.has('description') ? childDesc : undefined;
+ if (!childDescFinal && direction === 'jira-to-ado') { childDescFinal = childFull.title; }
+
+ const childDest = await destProvider.createWorkItem({
+ type: childFull.type,
+ rawTypeName: childDstType,
+ title: childFull.title,
+ description: childDescFinal,
+ acceptanceCriteria: fields.has('ac') && childAc ? childAc : undefined,
+ storyPoints: fields.has('points') ? (childFull.storyPoints ?? childFull.effort) : undefined,
+ priority: fields.has('priority') ? childFull.priority : undefined,
+ labels: fields.has('labels') && childFull.labels?.length ? childFull.labels : undefined,
+ });
+
+ // Link child to parent
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ await (destProvider as any).addParentLink?.(childDest.key ?? childDest.id, destItem.key ?? destItem.id).catch(() => {});
+ await destProvider.addComment(childDest.key,
+ `Migrated from ${sourceName} — original: ${child.url}, parent: ${destItem.key}`
+ ).catch(() => {});
+
+ migratedChildren.push({ source: childFull, dest: childDest });
+ } catch (childErr) {
+ failed.push({ key: `${child.key} (child)`, error: childErr instanceof Error ? childErr.message.slice(0, 120) : String(childErr) });
+ }
+ }
+ }
+ }
+
+ created.push({ source: full, dest: destItem, children: migratedChildren });
  } catch (e: unknown) {
  failed.push({ key: src.key, error: e instanceof Error ? e.message.slice(0, 120) : String(e) });
  }
  }
 
- // Report results
+ // Report results with clickable links
  if (created.length) {
+ const lines: string[] = [];
+ for (const { source, dest, children } of created) {
+ lines.push(`- [${source.key}](${source.url}) → [${dest.key}](${dest.url}) ${dest.title}`);
+ for (const c of children) {
+ lines.push(`  - [${c.source.key}](${c.source.url}) → [${c.dest.key}](${c.dest.url}) ${c.dest.title} _(child)_`);
+ }
+ }
+ const totalCount = created.length + created.reduce((n, c) => n + c.children.length, 0);
  stream.markdown(
- formatSuccess(`Migrated **${created.length}** item${created.length !== 1 ? 's' : ''} to ${destName}`) +
- '\n\n' +
- created.map(({ source, dest }) =>
- `- [${source.key}](${source.url}) → [${dest.key}](${dest.url}) ${dest.title}`
- ).join('\n')
+ formatSuccess(`Migrated **${totalCount}** item${totalCount !== 1 ? 's' : ''} to ${destName}`) +
+ '\n\n' + lines.join('\n')
  );
  }
  if (failed.length) {

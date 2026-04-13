@@ -120,7 +120,17 @@ export function activate(context: vscode.ExtensionContext): void {
     reg('pm-agent.debug',    () => runner.debug()),
     reg('pm-agent.create',   () => runner.create()),
     reg('pm-agent.parent',   () => runner.parent()),
-    reg('pm-agent.migrate',  () => runner.migrate()),
+    reg('pm-agent.migrate', async () => {
+      await runner.migrate();
+      const result = runner.lastMigrateResult;
+      if (result) {
+        const ch = vscode.window.createOutputChannel('PM Agent — Migration');
+        ch.clear();
+        // Strip markdown formatting for the output channel
+        ch.appendLine(result.replace(/\*\*/g, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'));
+        ch.show(true);
+      }
+    }),
 
     reg('pm-agent.openChat', async () => {
       try { ChatPanel.createOrShow(context, credMgr, runner); }

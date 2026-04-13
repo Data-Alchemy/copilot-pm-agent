@@ -6,9 +6,7 @@ This project follows [Semantic Versioning](https://semver.org/) and the format i
 
 Release changelogs are auto-generated from pull request labels via GitHub Actions.
 
-
 ---
-
 
 ## [0.2.2] - 2026-03-29
 
