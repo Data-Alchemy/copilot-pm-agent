@@ -15,6 +15,7 @@ PM Agent works in **three modes**, so you can choose what fits your workflow:
 
 PM Agent supports Visual Studio Code, Visual Studio Code Insiders, Cursor, and Windsurf. The extension requires VS Code version 1.95 or later.
 
+
 ---
 
 ## Why PM Agent?
