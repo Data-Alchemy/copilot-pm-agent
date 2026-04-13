@@ -7,6 +7,7 @@
 
 With the PM Agent extension, you can manage Jira and Azure DevOps work items directly from Visual Studio Code. Create tickets, update statuses, assign tasks, track sprints, and migrate work items between platforms — all without leaving your editor. PM Agent streamlines your development workflow by keeping project management in the same application you use to write code.
 
+
 PM Agent works in **three modes**, so you can choose what fits your workflow:
 
 - **Sidebar Chat** — A dedicated chat panel in the activity bar (like Copilot Chat) where you can type commands and see results inline while you code.
