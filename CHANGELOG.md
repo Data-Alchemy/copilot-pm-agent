@@ -8,6 +8,16 @@ Release changelogs are auto-generated from pull request labels via GitHub Action
 
 ---
 
+## [0.4.0] - 2026-04-13
+
+### Features
+
+- adding ticket type migration when migrating from ado to jira and vice versa
+
+### Bug Fixes
+
+- corrected migration menu not displaying migration type for tickets
+
 ## [0.2.2] - 2026-03-29
 
 See [release notes](https://github.com/Data-Alchemy/copilot-pm-agent/releases/tag/v0.2.2).
