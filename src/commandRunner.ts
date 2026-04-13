@@ -946,40 +946,40 @@ export class CommandRunner {
     fields.add('title');
 
     // ── Type mapping ──────────────────────────────────────────────────────
-    // Collect unique source types and let the user map them to destination types
-    const srcTypes = [...new Set(selectedItems.map(i => i.wi.type))];
+    // Fetch destination types and let user map any that don't exist
     let dstTypes: string[] = [];
     try {
       dstTypes = await dstProvider.getWorkItemTypes();
     } catch {
-      // Fallback types
       dstTypes = direction === 'jira-to-ado'
         ? ['Task', 'Bug', 'Epic', 'Feature', 'User Story', 'Product Backlog Item']
         : ['Story', 'Task', 'Bug', 'Epic', 'Sub-task'];
     }
 
+    // Collect unique source type names
+    const srcTypeNames = [...new Set(selectedItems.map(i => {
+      const wi = i.wi;
+      return wi.rawTypeName ?? cap(wi.type);
+    }))];
+
     const typeMap: Record<string, string> = {};
-    for (const srcType of srcTypes) {
-      // Try exact match first (case-insensitive)
+    for (const srcType of srcTypeNames) {
+      // Try exact match (case-insensitive)
       const exact = dstTypes.find(d => d.toLowerCase() === srcType.toLowerCase());
       if (exact) {
-        typeMap[srcType] = srcType; // keep original — the provider will handle normalization
+        typeMap[srcType] = exact;
         continue;
       }
 
-      // No exact match — ask the user
+      // No match — prompt user
       type TQ = vscode.QuickPickItem & { rawType: string };
-      const typeOpts: TQ[] = dstTypes.map(t => ({
-        label: t,
-        rawType: t,
-      }));
-
+      const typeOpts: TQ[] = dstTypes.map(t => ({ label: t, rawType: t }));
       const picked = await vscode.window.showQuickPick<TQ>(typeOpts, {
-        title: `Map "${srcType}" to which ${dstName} type?`,
-        placeHolder: `"${srcType}" does not exist in ${dstName}. Choose a replacement.`,
+        title: `"${srcType}" does not exist in ${dstName}`,
+        placeHolder: `Choose a ${dstName} type to replace "${srcType}"`,
         ignoreFocusOut: true
       });
-      if (!picked) { return; } // user cancelled
+      if (!picked) { return; }
       typeMap[srcType] = picked.rawType;
     }
 
@@ -1016,12 +1016,14 @@ export class CommandRunner {
             let desc = fields.has('description') ? cleanDesc : undefined;
             if (!desc && direction === 'jira-to-ado') { desc = full.title; }
 
-            // Map the source type to the destination type
-            const mappedType = typeMap[full.type] || full.type;
+            // Resolve the mapped destination type name
+            const srcTypeName = full.rawTypeName ?? cap(full.type);
+            const dstTypeName = typeMap[srcTypeName] ?? cap(full.type);
 
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const destItem: import('./types').WorkItem = await (dstProvider as any).createWorkItem({
-              type:               mappedType,
+              type:               full.type,
+              rawTypeName:        dstTypeName,
               title:              full.title,
               description:        desc,
               acceptanceCriteria: fields.has('ac') && cleanAc ? cleanAc : undefined,

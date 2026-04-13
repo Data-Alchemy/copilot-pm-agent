@@ -178,11 +178,13 @@ export class JiraProvider {
       story:'Story', task:'Task', bug:'Bug', epic:'Epic',
       subtask:'Sub-task', feature:'Feature', testcase:'Test'
     };
+    // Use rawTypeName if provided (e.g. from migration), otherwise map from enum
+    const issuetypeName = input.rawTypeName || typeMap[input.type] || 'Task';
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fields: any = {
       project:   { key: this.defaultProject },
       summary:   input.title,
-      issuetype: { name: typeMap[input.type] ?? 'Task' },
+      issuetype: { name: issuetypeName },
     };
 
     // priority set via post-create update below (may not be on create screen)

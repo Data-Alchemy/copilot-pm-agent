@@ -56,6 +56,7 @@ export interface Project {
 
 export interface CreateWorkItemInput {
   type:         WorkItemType;
+  rawTypeName?: string;        // exact platform type name, bypasses typeMap
   title:        string;
   description?:        string;
   acceptanceCriteria?: string;  // ADO: AcceptanceCriteria field

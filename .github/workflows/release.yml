@@ -44,7 +44,7 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Determine version bump and collect release notes
+      - name: Determine version bump and build release notes
         if: steps.guard.outputs.skip != 'true'
         id: bump
         run: |
@@ -68,7 +68,7 @@ jobs:
           echo "Commits since ${LAST_TAG:-beginning}:"
           echo "$COMMITS"
 
-          # Determine bump type
+          # Determine bump
           FORCED="${{ github.event.inputs.bump }}"
           if [ -n "$FORCED" ]; then
             BUMP="$FORCED"
@@ -95,22 +95,22 @@ jobs:
           VERSION="${MAJ}.${MIN}.${PAT}"
           echo "$BUMP: $CURRENT -> $VERSION"
 
-          # Build release notes from commits
-          # Categorize commits by conventional commit prefix
+          # Build categorized release notes from commit messages
           FEATURES=""
           FIXES=""
           OTHER=""
 
           while IFS= read -r line; do
+            # Strip the prefix to get the human-readable message
+            CLEANED=$(echo "$line" | sed 's/^[a-zA-Z]*([^)]*): //; s/^[a-zA-Z]*: //')
             if echo "$line" | grep -qiE "^feat(\(.+\))?:"; then
-              CLEANED=$(echo "$line" | sed 's/^[a-zA-Z]*([^)]*): //; s/^[a-zA-Z]*: //')
               FEATURES="${FEATURES}- ${CLEANED}\n"
             elif echo "$line" | grep -qiE "^fix(\(.+\))?:"; then
-              CLEANED=$(echo "$line" | sed 's/^[a-zA-Z]*([^)]*): //; s/^[a-zA-Z]*: //')
               FIXES="${FIXES}- ${CLEANED}\n"
             elif echo "$line" | grep -qiE "^(perf|refactor|build|ci|docs|style|test|chore)(\(.+\))?:"; then
-              CLEANED=$(echo "$line" | sed 's/^[a-zA-Z]*([^)]*): //; s/^[a-zA-Z]*: //')
               OTHER="${OTHER}- ${CLEANED}\n"
+            else
+              OTHER="${OTHER}- ${line}\n"
             fi
           done <<< "$COMMITS"
 
@@ -119,17 +119,12 @@ jobs:
           [ -n "$FIXES" ] && NOTES="${NOTES}### Bug Fixes\n\n${FIXES}\n"
           [ -n "$OTHER" ] && NOTES="${NOTES}### Other Changes\n\n${OTHER}\n"
 
-          # Write notes to a temp file (avoids multiline output issues)
+          # Write to files for later steps
           printf "%b" "$NOTES" > /tmp/release_notes.md
+          printf "%b" "$NOTES" > /tmp/changelog_entry.md
+
           echo "Release notes:"
           cat /tmp/release_notes.md
-
-          # Write changelog entry
-          CHANGELOG_ENTRY=""
-          [ -n "$FEATURES" ] && CHANGELOG_ENTRY="${CHANGELOG_ENTRY}### Features\n\n${FEATURES}\n"
-          [ -n "$FIXES" ] && CHANGELOG_ENTRY="${CHANGELOG_ENTRY}### Bug Fixes\n\n${FIXES}\n"
-          [ -n "$OTHER" ] && CHANGELOG_ENTRY="${CHANGELOG_ENTRY}### Other Changes\n\n${OTHER}\n"
-          printf "%b" "$CHANGELOG_ENTRY" > /tmp/changelog_entry.md
 
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -173,7 +168,9 @@ jobs:
             const fs = require('fs');
             const v = '$V';
             const d = new Date().toISOString().split('T')[0];
-            const details = fs.readFileSync('/tmp/changelog_entry.md', 'utf8').trim();
+            const details = fs.existsSync('/tmp/changelog_entry.md')
+              ? fs.readFileSync('/tmp/changelog_entry.md', 'utf8').trim()
+              : '';
             let cl = fs.readFileSync('CHANGELOG.md', 'utf8');
             if (!cl.includes('[' + v + ']')) {
               const header = '## [' + v + '] - ' + d + '\n\n';
@@ -219,7 +216,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json CHANGELOG.md
           git diff --cached --quiet || git commit -m "release: v${{ env.VERSION }} [skip ci]"
-          git push origin main
+          git tag "v${{ env.VERSION }}"
+          git push origin main --tags
 
       - name: Create GitHub Release
         if: steps.bump.outputs.should_release == 'true'
