@@ -945,6 +945,44 @@ export class CommandRunner {
     const fields = new Set(fieldPicks.map(f => f.field));
     fields.add('title');
 
+    // ── Type mapping ──────────────────────────────────────────────────────
+    // Collect unique source types and let the user map them to destination types
+    const srcTypes = [...new Set(selectedItems.map(i => i.wi.type))];
+    let dstTypes: string[] = [];
+    try {
+      dstTypes = await dstProvider.getWorkItemTypes();
+    } catch {
+      // Fallback types
+      dstTypes = direction === 'jira-to-ado'
+        ? ['Task', 'Bug', 'Epic', 'Feature', 'User Story', 'Product Backlog Item']
+        : ['Story', 'Task', 'Bug', 'Epic', 'Sub-task'];
+    }
+
+    const typeMap: Record<string, string> = {};
+    for (const srcType of srcTypes) {
+      // Try exact match first (case-insensitive)
+      const exact = dstTypes.find(d => d.toLowerCase() === srcType.toLowerCase());
+      if (exact) {
+        typeMap[srcType] = srcType; // keep original — the provider will handle normalization
+        continue;
+      }
+
+      // No exact match — ask the user
+      type TQ = vscode.QuickPickItem & { rawType: string };
+      const typeOpts: TQ[] = dstTypes.map(t => ({
+        label: t,
+        rawType: t,
+      }));
+
+      const picked = await vscode.window.showQuickPick<TQ>(typeOpts, {
+        title: `Map "${srcType}" to which ${dstName} type?`,
+        placeHolder: `"${srcType}" does not exist in ${dstName}. Choose a replacement.`,
+        ignoreFocusOut: true
+      });
+      if (!picked) { return; } // user cancelled
+      typeMap[srcType] = picked.rawType;
+    }
+
     // Run migration
     let moved = 0, failed = 0;
     const createdKeys: string[] = [];
@@ -978,9 +1016,12 @@ export class CommandRunner {
             let desc = fields.has('description') ? cleanDesc : undefined;
             if (!desc && direction === 'jira-to-ado') { desc = full.title; }
 
+            // Map the source type to the destination type
+            const mappedType = typeMap[full.type] || full.type;
+
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const destItem: import('./types').WorkItem = await (dstProvider as any).createWorkItem({
-              type:               full.type,
+              type:               mappedType,
               title:              full.title,
               description:        desc,
               acceptanceCriteria: fields.has('ac') && cleanAc ? cleanAc : undefined,

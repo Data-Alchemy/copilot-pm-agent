@@ -44,34 +44,35 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Determine version bump
+      - name: Determine version bump and collect release notes
         if: steps.guard.outputs.skip != 'true'
         id: bump
         run: |
           CURRENT=$(node -p "require('./package.json').version")
           echo "Current: $CURRENT"
 
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${LAST_TAG}..HEAD"
+          fi
+
+          COMMITS=$(git log $RANGE --pretty=format:"%s" 2>/dev/null)
+          if [ -z "$COMMITS" ]; then
+            echo "No commits since last tag"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Commits since ${LAST_TAG:-beginning}:"
+          echo "$COMMITS"
+
+          # Determine bump type
           FORCED="${{ github.event.inputs.bump }}"
           if [ -n "$FORCED" ]; then
             BUMP="$FORCED"
           else
-            LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-            if [ -z "$LAST_TAG" ]; then
-              RANGE="HEAD"
-            else
-              RANGE="${LAST_TAG}..HEAD"
-            fi
-
-            COMMITS=$(git log $RANGE --pretty=format:"%s" 2>/dev/null)
-            if [ -z "$COMMITS" ]; then
-              echo "No commits since last tag"
-              echo "should_release=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            echo "Commits since ${LAST_TAG:-beginning}:"
-            echo "$COMMITS"
-
             BUMP=""
             echo "$COMMITS" | grep -qiE "^.+!:" && BUMP="major"
             [ -z "$BUMP" ] && echo "$COMMITS" | grep -qiE "^feat(\(.+\))?:" && BUMP="minor"
@@ -84,6 +85,7 @@ jobs:
             fi
           fi
 
+          # Calculate new version
           IFS='.' read -r MAJ MIN PAT <<< "$CURRENT"
           case "$BUMP" in
             major) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
@@ -91,8 +93,44 @@ jobs:
             patch) PAT=$((PAT+1)) ;;
           esac
           VERSION="${MAJ}.${MIN}.${PAT}"
-
           echo "$BUMP: $CURRENT -> $VERSION"
+
+          # Build release notes from commits
+          # Categorize commits by conventional commit prefix
+          FEATURES=""
+          FIXES=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            if echo "$line" | grep -qiE "^feat(\(.+\))?:"; then
+              CLEANED=$(echo "$line" | sed 's/^[a-zA-Z]*([^)]*): //; s/^[a-zA-Z]*: //')
+              FEATURES="${FEATURES}- ${CLEANED}\n"
+            elif echo "$line" | grep -qiE "^fix(\(.+\))?:"; then
+              CLEANED=$(echo "$line" | sed 's/^[a-zA-Z]*([^)]*): //; s/^[a-zA-Z]*: //')
+              FIXES="${FIXES}- ${CLEANED}\n"
+            elif echo "$line" | grep -qiE "^(perf|refactor|build|ci|docs|style|test|chore)(\(.+\))?:"; then
+              CLEANED=$(echo "$line" | sed 's/^[a-zA-Z]*([^)]*): //; s/^[a-zA-Z]*: //')
+              OTHER="${OTHER}- ${CLEANED}\n"
+            fi
+          done <<< "$COMMITS"
+
+          NOTES=""
+          [ -n "$FEATURES" ] && NOTES="${NOTES}### Features\n\n${FEATURES}\n"
+          [ -n "$FIXES" ] && NOTES="${NOTES}### Bug Fixes\n\n${FIXES}\n"
+          [ -n "$OTHER" ] && NOTES="${NOTES}### Other Changes\n\n${OTHER}\n"
+
+          # Write notes to a temp file (avoids multiline output issues)
+          printf "%b" "$NOTES" > /tmp/release_notes.md
+          echo "Release notes:"
+          cat /tmp/release_notes.md
+
+          # Write changelog entry
+          CHANGELOG_ENTRY=""
+          [ -n "$FEATURES" ] && CHANGELOG_ENTRY="${CHANGELOG_ENTRY}### Features\n\n${FEATURES}\n"
+          [ -n "$FIXES" ] && CHANGELOG_ENTRY="${CHANGELOG_ENTRY}### Bug Fixes\n\n${FIXES}\n"
+          [ -n "$OTHER" ] && CHANGELOG_ENTRY="${CHANGELOG_ENTRY}### Other Changes\n\n${OTHER}\n"
+          printf "%b" "$CHANGELOG_ENTRY" > /tmp/changelog_entry.md
+
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -105,12 +143,13 @@ jobs:
         if: steps.bump.outputs.should_release == 'true'
         run: npm install
 
-      - name: Set version
+      - name: Set version and update changelog
         if: steps.bump.outputs.should_release == 'true'
         run: |
           V="${{ steps.bump.outputs.version }}"
           echo "VERSION=$V" >> "$GITHUB_ENV"
 
+          # package.json
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
@@ -118,6 +157,7 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg,null,2)+'\n');
           "
 
+          # package-lock.json
           if [ -f package-lock.json ]; then
             node -e "
               const fs = require('fs');
@@ -128,19 +168,24 @@ jobs:
             "
           fi
 
+          # CHANGELOG.md — insert real commit details
           node -e "
             const fs = require('fs');
-            const v='$V', d=new Date().toISOString().split('T')[0];
-            let c = fs.readFileSync('CHANGELOG.md','utf8');
-            if (!c.includes('['+v+']')) {
-              const e = '## ['+v+'] - '+d+'\n\nSee [release notes](https://github.com/Data-Alchemy/copilot-pm-agent/releases/tag/v'+v+').\n\n';
-              const i = c.indexOf('## [');
-              c = i>=0 ? c.slice(0,i)+e+c.slice(i) : c+'\n'+e;
-              fs.writeFileSync('CHANGELOG.md', c);
+            const v = '$V';
+            const d = new Date().toISOString().split('T')[0];
+            const details = fs.readFileSync('/tmp/changelog_entry.md', 'utf8').trim();
+            let cl = fs.readFileSync('CHANGELOG.md', 'utf8');
+            if (!cl.includes('[' + v + ']')) {
+              const header = '## [' + v + '] - ' + d + '\n\n';
+              const entry = header + (details || 'Maintenance release.') + '\n\n';
+              const idx = cl.indexOf('## [');
+              cl = idx >= 0 ? cl.slice(0, idx) + entry + cl.slice(idx) : cl + '\n' + entry;
+              fs.writeFileSync('CHANGELOG.md', cl);
+              console.log('CHANGELOG: added ' + v + ' with ' + details.split('\\n').filter(l => l.startsWith('-')).length + ' entries');
             }
           "
 
-          echo "Version set: $(node -p "require('./package.json').version")"
+          echo "Version: $(node -p "require('./package.json').version")"
 
       - name: Compile
         if: steps.bump.outputs.should_release == 'true'
@@ -182,4 +227,4 @@ jobs:
         with:
           tag_name: v${{ env.VERSION }}
           name: v${{ env.VERSION }}
-          generate_release_notes: true
+          body_path: /tmp/release_notes.md
