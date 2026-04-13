@@ -341,8 +341,6 @@ export class JiraProvider {
 
   /** Link a Jira issue to a parent (works for sub-tasks and child issues) */
   async addParentLink(childKey: string, parentKeyOrId: string): Promise<void> {
-    // Jira Cloud supports { parent: { key: "PROJ-123" } } for standard issues
-    // and { parent: { id: "10001" } } for sub-tasks
     const isNumericId = /^\d+$/.test(parentKeyOrId.trim());
     const parentRef = isNumericId
       ? { id: parentKeyOrId.trim() }
@@ -353,7 +351,6 @@ export class JiraProvider {
         body: JSON.stringify({ fields: { parent: parentRef } })
       });
     } catch {
-      // Fallback: try the other format
       const fallbackRef = isNumericId
         ? { key: parentKeyOrId.trim() }
         : { id: parentKeyOrId.trim() };
@@ -361,6 +358,22 @@ export class JiraProvider {
         method: 'PUT',
         body: JSON.stringify({ fields: { parent: fallbackRef } })
       });
+    }
+  }
+
+  /** Fetch child issues (subtasks + child links) for a given issue */
+  async getChildItems(parentKey: string): Promise<WorkItem[]> {
+    try {
+      // JQL: parent = KEY returns subtasks and child issues
+      const jql = `parent = "${parentKey}" ORDER BY created ASC`;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = await this.http<any>('/search/jql', {
+        method: 'POST',
+        body: JSON.stringify({ jql, fields: 'summary,status,issuetype,assignee,priority,labels,customfield_10016,customfield_10028,customfield_10014,story_points,description,project,comment', maxResults: 100 })
+      });
+      return (r.issues ?? []).map((i: any) => this.mapIssue(i));
+    } catch {
+      return [];
     }
   }
 

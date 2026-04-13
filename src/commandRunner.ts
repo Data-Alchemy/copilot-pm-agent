@@ -934,6 +934,7 @@ export class CommandRunner {
       { label: 'Labels / Tags',       description: '',                         field: 'labels',      picked: true  },
       { label: 'Assignee',            description: 'Matched by email',         field: 'assignee',    picked: false },
       { label: 'Comments',            description: 'Copies up to 20',          field: 'comments',    picked: false },
+      { label: 'Child Items',         description: 'Migrate subtasks/children and link to parent', field: 'children', picked: false },
     ].map(f => ({ ...f, alwaysShow: true })) as FQ[];
 
     const fieldPicks = await vscode.window.showQuickPick<FQ>(fieldOpts, {
@@ -1060,6 +1061,60 @@ export class CommandRunner {
                 ).catch(() => {});
               }
             }
+
+            // Migrate child items if selected
+            if (fields.has('children')) {
+              const children = await (srcProvider as any).getChildItems?.(src.key).catch(() => []) ?? [];
+              if (children.length) {
+                progress.report({ message: `${idx+1}/${selectedItems.length}: ${src.key} — migrating ${children.length} child item(s)` });
+                for (const child of children) {
+                  try {
+                    const childFull = await srcProvider.getWorkItem(child.key);
+                    const childDesc = (childFull.description ?? '').replace(/<[^>]+>/g, '').trim();
+                    const childAc   = ((childFull as any).acceptanceCriteria ?? '').replace(/<[^>]+>/g, '').trim();
+
+                    // Map child type
+                    const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
+                    let childDstType = typeMap[childSrcType];
+                    if (!childDstType) {
+                      // Check for match in destination types
+                      const match = dstTypes.find(d => d.toLowerCase() === childSrcType.toLowerCase());
+                      childDstType = match ?? dstTypeName; // fall back to parent's mapped type
+                    }
+
+                    let childDescFinal = fields.has('description') ? childDesc : undefined;
+                    if (!childDescFinal && direction === 'jira-to-ado') { childDescFinal = childFull.title; }
+
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    const childDest: import('./types').WorkItem = await (dstProvider as any).createWorkItem({
+                      type:               childFull.type,
+                      rawTypeName:        childDstType,
+                      title:              childFull.title,
+                      description:        childDescFinal,
+                      acceptanceCriteria: fields.has('ac') && childAc ? childAc : undefined,
+                      storyPoints:        fields.has('points') ? (childFull.storyPoints ?? childFull.effort) : undefined,
+                      priority:           fields.has('priority') ? childFull.priority : undefined,
+                      labels:             fields.has('labels') && childFull.labels?.length ? childFull.labels : undefined,
+                    });
+
+                    // Link child to the migrated parent
+                    await (dstProvider as any).addParentLink?.(childDest.key ?? childDest.id, destItem.key ?? destItem.id).catch(() => {});
+
+                    // Migration comment on child
+                    await dstProvider.addComment(childDest.key,
+                      `Migrated from ${srcName} — original: ${child.url}, parent: ${destItem.key}`
+                    ).catch(() => {});
+
+                    createdKeys.push(`  [${child.key}](${child.url}) -> [${childDest.key}](${childDest.url}) (child of ${destItem.key})`);
+                    moved++;
+                  } catch (childErr) {
+                    failedKeys.push(`${child.key} (child): ${childErr instanceof Error ? childErr.message : String(childErr)}`);
+                    failed++;
+                  }
+                }
+              }
+            }
+
             createdKeys.push(`[${src.key}](${full.url}) -> [${destItem.key}](${destItem.url})`);
             moved++;
           } catch (err) {
