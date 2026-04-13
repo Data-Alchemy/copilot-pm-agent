@@ -946,17 +946,20 @@ export class CommandRunner {
     fields.add('title');
 
     // ── Type mapping ──────────────────────────────────────────────────────
-    // Fetch destination types and let user map any that don't exist
+    // Fetch destination types and let user confirm the mapping for EVERY type
     let dstTypes: string[] = [];
     try {
-      dstTypes = await dstProvider.getWorkItemTypes();
+      dstTypes = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Loading ${dstName} work item types...` },
+        () => dstProvider.getWorkItemTypes()
+      );
     } catch {
       dstTypes = direction === 'jira-to-ado'
         ? ['Task', 'Bug', 'Epic', 'Feature', 'User Story', 'Product Backlog Item']
         : ['Story', 'Task', 'Bug', 'Epic', 'Sub-task'];
     }
 
-    // Collect unique source type names
+    // Collect unique source type names from selected items
     const srcTypeNames = [...new Set(selectedItems.map(i => {
       const wi = i.wi;
       return wi.rawTypeName ?? cap(wi.type);
@@ -964,19 +967,31 @@ export class CommandRunner {
 
     const typeMap: Record<string, string> = {};
     for (const srcType of srcTypeNames) {
-      // Try exact match (case-insensitive)
+      // Find the best default — exact match or first item
       const exact = dstTypes.find(d => d.toLowerCase() === srcType.toLowerCase());
+
+      // Build options with the best match pre-selected at top
+      type TQ = vscode.QuickPickItem & { rawType: string };
+      const typeOpts: TQ[] = dstTypes.map(t => ({
+        label: t,
+        description: t.toLowerCase() === srcType.toLowerCase() ? '(auto-matched)' : '',
+        rawType: t,
+      }));
+
+      // Sort so the auto-match appears first
       if (exact) {
-        typeMap[srcType] = exact;
-        continue;
+        typeOpts.sort((a, b) => {
+          if (a.rawType === exact) { return -1; }
+          if (b.rawType === exact) { return 1; }
+          return 0;
+        });
       }
 
-      // No match — prompt user
-      type TQ = vscode.QuickPickItem & { rawType: string };
-      const typeOpts: TQ[] = dstTypes.map(t => ({ label: t, rawType: t }));
       const picked = await vscode.window.showQuickPick<TQ>(typeOpts, {
-        title: `"${srcType}" does not exist in ${dstName}`,
-        placeHolder: `Choose a ${dstName} type to replace "${srcType}"`,
+        title: `Map "${srcType}" → ${dstName} type`,
+        placeHolder: exact
+          ? `"${srcType}" matched "${exact}" — press Enter to accept or pick a different type`
+          : `"${srcType}" has no match in ${dstName} — choose a type`,
         ignoreFocusOut: true
       });
       if (!picked) { return; }
