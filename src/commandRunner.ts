@@ -7,7 +7,7 @@ import { CredentialManager } from './utils/credentialManager';
 import { createProvider } from './providers/providerFactory';
 import { AdoProvider } from './providers/adoProvider';
 import { WorkItem } from './types';
-import { cap, truncate } from './utils/strings';
+import { cap, truncate, stripHtml } from './utils/strings';
 
 
 export class CommandRunner {
@@ -1011,8 +1011,8 @@ export class CommandRunner {
           progress.report({ message: `${idx+1}/${selectedItems.length}: ${src.key}` });
           try {
             const full = await srcProvider.getWorkItem(src.key);
-            const cleanDesc = (full.description ?? '').replace(/<[^>]+>/g, '').trim();
-            const cleanAc   = ((full as any).acceptanceCriteria ?? '').replace(/<[^>]+>/g, '').trim();
+            const cleanDesc = stripHtml(full.description ?? '');
+            const cleanAc   = stripHtml((full as any).acceptanceCriteria ?? '');
 
             let assigneeId: string | undefined;
             if (fields.has('assignee') && full.assignee?.email) {
@@ -1064,14 +1064,14 @@ export class CommandRunner {
 
             // Migrate child items if selected
             if (fields.has('children')) {
-              const children = await (srcProvider as any).getChildItems?.(src.key).catch(() => []) ?? [];
+              const children = await (srcProvider as any).getChildItems?.(full.id ?? src.key).catch(() => []) ?? [];
               if (children.length) {
                 progress.report({ message: `${idx+1}/${selectedItems.length}: ${src.key} — migrating ${children.length} child item(s)` });
                 for (const child of children) {
                   try {
                     const childFull = await srcProvider.getWorkItem(child.key);
-                    const childDesc = (childFull.description ?? '').replace(/<[^>]+>/g, '').trim();
-                    const childAc   = ((childFull as any).acceptanceCriteria ?? '').replace(/<[^>]+>/g, '').trim();
+                    const childDesc = stripHtml(childFull.description ?? '');
+                    const childAc   = stripHtml((childFull as any).acceptanceCriteria ?? '');
 
                     // Map child type
                     const childSrcType = childFull.rawTypeName ?? cap(childFull.type);

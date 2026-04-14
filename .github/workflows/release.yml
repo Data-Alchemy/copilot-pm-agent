@@ -93,6 +93,16 @@ jobs:
             patch) PAT=$((PAT+1)) ;;
           esac
           VERSION="${MAJ}.${MIN}.${PAT}"
+
+          # Skip past any version that already exists as a git tag or on the Marketplace
+          # v0.5.0 was previously published and cannot be reused
+          while git tag -l "v$VERSION" | grep -q "v$VERSION" || [ "$VERSION" = "0.5.0" ]; do
+            echo "v$VERSION already exists — bumping patch"
+            IFS='.' read -r MAJ MIN PAT <<< "$VERSION"
+            PAT=$((PAT+1))
+            VERSION="${MAJ}.${MIN}.${PAT}"
+          done
+
           echo "$BUMP: $CURRENT -> $VERSION"
 
           # Build categorized release notes from commit messages
@@ -200,7 +210,27 @@ jobs:
         if: steps.bump.outputs.should_release == 'true'
         run: |
           rm -f *.vsix
-          npx @vscode/vsce package --no-dependencies --no-update-package-json
+          V=$(node -p "require('./package.json').version")
+          echo "Packaging version: $V"
+          if [ "$V" = "0.5.0" ] || [ -z "$V" ]; then
+            echo "ERROR: Version was not bumped! Got: $V"
+            exit 1
+          fi
+          # Remove prepublish so vsce doesn't re-compile from scratch
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+            delete pkg.scripts['vscode:prepublish'];
+            fs.writeFileSync('package.json', JSON.stringify(pkg,null,2)+'\n');
+          "
+          npx @vscode/vsce package --no-dependencies
+          # Restore prepublish for the commit
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+            pkg.scripts['vscode:prepublish'] = 'npm run compile && npm run inject-wizard';
+            fs.writeFileSync('package.json', JSON.stringify(pkg,null,2)+'\n');
+          "
           echo "Built: $(ls *.vsix)"
 
       - name: Publish to Marketplace

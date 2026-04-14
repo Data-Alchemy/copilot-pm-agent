@@ -8,7 +8,21 @@ export const cap = (s: string): string =>
   s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
 
 /** Strip HTML tags from a string. */
-export const stripHtml = (s: string): string => s.replace(/<[^>]+>/g, '');
+export const stripHtml = (s: string): string =>
+  decodeHtmlEntities(s.replace(/<[^>]+>/g, '')).trim();
+
+/** Decode common HTML entities to plain text. */
+export const decodeHtmlEntities = (s: string): string =>
+  s.replace(/&nbsp;/g, ' ')
+   .replace(/&amp;/g, '&')
+   .replace(/&lt;/g, '<')
+   .replace(/&gt;/g, '>')
+   .replace(/&quot;/g, '"')
+   .replace(/&#39;/g, "'")
+   .replace(/&#x2F;/g, '/')
+   .replace(/&apos;/g, "'")
+   .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+   .replace(/\s{2,}/g, ' ');
 
 /** Truncate a string to `max` characters, appending `…` if truncated. */
 export const truncate = (s: string, max: number): string =>

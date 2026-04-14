@@ -96,7 +96,11 @@ export class ChatPanel {
 
   // ── Message routing ────────────────────────────────────────────────────────
 
-  private async handleMessage(msg: { type: string; text?: string; command?: string }) {
+  private async handleMessage(msg: { type: string; text?: string; command?: string; url?: string }) {
+    if (msg.type === 'openUrl' && msg.url) {
+      await vscode.env.openExternal(vscode.Uri.parse(msg.url));
+      return;
+    }
     if (msg.type === 'userMessage' && msg.text?.trim()) {
       await this.processInput(msg.text.trim());
     }
@@ -602,6 +606,15 @@ details[open] summary::before{transform:rotate(90deg)}
 'input.addEventListener("input", function(){',
 '  input.style.height = "auto";',
 '  input.style.height = Math.min(input.scrollHeight, 120) + "px";',
+'});',
+'// Make links clickable — intercept and open via extension host',
+'document.addEventListener("click", function(e){',
+'  var el = e.target;',
+'  while(el && el.tagName !== "A") el = el.parentElement;',
+'  if(el && el.href){',
+'    e.preventDefault();',
+'    vscode.postMessage({type:"openUrl", url:el.href});',
+'  }',
 '});',
     ].join('\n');
   }

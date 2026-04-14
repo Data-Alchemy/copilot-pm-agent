@@ -5,7 +5,7 @@ import { createProvider } from './providers/providerFactory';
 import { AdoProvider } from './providers/adoProvider';
 import { parseIntent, ParsedIntent } from './utils/intentParser';
 import { formatWorkItem, formatWorkItemList, formatUserList, formatSuccess, formatError } from './utils/formatter';
-import { cap } from './utils/strings';
+import { cap, stripHtml } from './utils/strings';
 import { WorkItemPanel } from './panels/workItemPanel';
 import { WorkItem, WorkItemType, User } from './types';
 import { enhanceTicket, enhanceComment, estimateEffort, testAiConnection, listCopilotModels, markdownToAdoHtml, generateTasksForStory, AiConfig } from './utils/aiHelper';
@@ -2154,8 +2154,8 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  }
 
  // Build description â€” strip HTML tags from ADO descriptions
- const cleanDesc = (full.description ?? '').replace(/<[^>]+>/g, '').trim();
- const cleanAc   = (full.acceptanceCriteria as string | undefined ?? '').replace(/<[^>]+>/g, '').trim();
+ const cleanDesc = stripHtml(full.description ?? '');
+ const cleanAc   = stripHtml(full.acceptanceCriteria as string | undefined ?? '');
 
  // Ensure description is non-empty for ADO
  let desc = fields.has('description') ? cleanDesc : undefined;
@@ -2200,14 +2200,14 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  const migratedChildren: Array<{ source: WorkItem; dest: WorkItem }> = [];
  if (fields.has('children')) {
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
- const children: WorkItem[] = await (sourceProvider as any).getChildItems?.(src.key).catch(() => []) ?? [];
+ const children: WorkItem[] = await (sourceProvider as any).getChildItems?.(full.id ?? src.key).catch(() => []) ?? [];
  if (children.length) {
  stream.progress(`Copying ${children.length} child item(s) of ${src.key}...`);
  for (const child of children) {
  try {
  const childFull = await sourceProvider.getWorkItem(child.key);
- const childDesc = (childFull.description ?? '').replace(/<[^>]+>/g, '').trim();
- const childAc   = ((childFull as any).acceptanceCriteria ?? '').replace(/<[^>]+>/g, '').trim();
+ const childDesc = stripHtml(childFull.description ?? '');
+ const childAc   = stripHtml((childFull as any).acceptanceCriteria ?? '');
  const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
  let childDstType = typeMap[childSrcType];
  if (!childDstType) {

@@ -318,8 +318,10 @@ export class AdoProvider {
 
   /** Fetch child work items linked via Hierarchy-Forward */
   async getChildItems(parentId: string): Promise<WorkItem[]> {
+    const num = parentId.replace(/^#/, '').replace(/^AB#/i, '');
+
+    // Method 1: Fetch via relations API
     try {
-      const num = parentId.replace(/^#/, '').replace(/^AB#/i, '');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const parent = await this.http<any>(
         `${this.orgUrl}/_apis/wit/workitems/${num}?$expand=relations&api-version=7.1`
@@ -328,25 +330,48 @@ export class AdoProvider {
         .filter((r: any) => r.rel === 'System.LinkTypes.Hierarchy-Forward')
         .map((r: any) => r.url as string);
 
-      if (!childUrls.length) { return []; }
+      if (childUrls.length) {
+        const childIds = childUrls.map((u: string) => {
+          const m = u.match(/\/workitems\/(\d+)$/);
+          return m ? m[1] : null;
+        }).filter(Boolean);
 
-      // Extract IDs from URLs
-      const childIds = childUrls.map((u: string) => {
-        const m = u.match(/\/workitems\/(\d+)$/);
-        return m ? m[1] : null;
-      }).filter(Boolean);
+        if (childIds.length) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const r = await this.http<{ value?: any[] }>(
+            `${this.orgUrl}/_apis/wit/workitems?ids=${childIds.join(',')}&$expand=all&api-version=7.1`
+          );
+          return (r.value ?? []).map((wi: any) => this.map(wi));
+        }
+      }
+    } catch { /* fall through to WIQL */ }
 
-      if (!childIds.length) { return []; }
-
-      // Fetch all children in a batch
+    // Method 2: WIQL query for child links
+    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const r = await this.http<{ value?: any[] }>(
-        `${this.orgUrl}/_apis/wit/workitems?ids=${childIds.join(',')}&$expand=all&api-version=7.1`
+      const wiql = await this.http<any>(
+        `${this.orgUrl}/${this.projectEnc}/_apis/wit/wiql?api-version=7.1`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            query: `SELECT [System.Id] FROM WorkItemLinks WHERE ([Source].[System.Id] = ${num}) AND ([System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward') MODE (MustContain)`
+          })
+        }
       );
-      return (r.value ?? []).map((wi: any) => this.map(wi));
-    } catch {
-      return [];
-    }
+      const childIds = (wiql.workItemRelations ?? [])
+        .filter((r: any) => r.target && r.target.id !== Number(num))
+        .map((r: any) => String(r.target.id));
+
+      if (childIds.length) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = await this.http<{ value?: any[] }>(
+          `${this.orgUrl}/_apis/wit/workitems?ids=${childIds.join(',')}&$expand=all&api-version=7.1`
+        );
+        return (r.value ?? []).map((wi: any) => this.map(wi));
+      }
+    } catch { /* no children */ }
+
+    return [];
   }
 
   async transitionWorkItem(id: string, status: string): Promise<AgentToolResult> {
