@@ -9,6 +9,17 @@ Release changelogs are auto-generated from pull request labels via GitHub Action
 ---
 
 
+## [0.6.2] - 2026-04-14
+
+### Bug Fixes
+
+- fixing migration not passing child tickets between systems
+
+### Other Changes
+
+- updated logging
+- fixing migration not passing child tickets between systems
+
 ## [0.6.1] - 2026-04-13
 
 ### Bug Fixes
