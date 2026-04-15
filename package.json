@@ -2,11 +2,7 @@
   "name": "copilot-pm-agent",
   "displayName": "Copilot PM Agent",
   "description": "VS Code Agent that lets you open, estimate, and assign Jira & Azure DevOps work items via chat",
-<<<<<<< HEAD
-  "version": "0.2.2",
-=======
   "version": "0.6.2",
->>>>>>> 928033b67b33aba81f5470d8a0011ab8d660a44c
   "publisher": "DataAlchemy",
   "engines": {
     "vscode": "^1.95.0"
