@@ -35,6 +35,29 @@ export class CommandRunner {
     return this.context.workspaceState.get<WorkItem>('pmAgent.lastItem');
   }
 
+  /** Prompt user to filter items by type. Returns filtered items or undefined if cancelled. */
+  private async filterByType(items: WorkItem[], context?: string): Promise<WorkItem[] | undefined> {
+    const types = [...new Set(items.map(wi => wi.rawTypeName ?? cap(wi.type)))].sort();
+    if (types.length <= 1) { return items; } // nothing to filter
+
+    type TF = vscode.QuickPickItem & { typeName: string };
+    const opts: TF[] = types.map(t => {
+      const count = items.filter(wi => (wi.rawTypeName ?? cap(wi.type)) === t).length;
+      return { label: t, description: `${count} item${count !== 1 ? 's' : ''}`, typeName: t, picked: true };
+    });
+
+    const picked = await vscode.window.showQuickPick<TF>(opts, {
+      title: context ? `Filter by type — ${context}` : 'Filter by type',
+      placeHolder: 'Uncheck types to exclude, Enter to continue',
+      canPickMany: true,
+      ignoreFocusOut: true
+    });
+    if (!picked?.length) { return undefined; }
+
+    const allowed = new Set(picked.map(t => t.typeName));
+    return items.filter(wi => allowed.has(wi.rawTypeName ?? cap(wi.type)));
+  }
+
   // ── Pick a work item from a quick-pick list ──────────────────────────────
 
   async pickItem(title: string): Promise<WorkItem | undefined> {
@@ -52,18 +75,22 @@ export class CommandRunner {
       return undefined;
     }
 
+    // Filter by type
+    const filtered = await this.filterByType(items, title);
+    if (!filtered) { return undefined; }
+
     type Opt = vscode.QuickPickItem & { item?: WorkItem };
     const opts: Opt[] = [];
 
     const last = this.lastItem();
-    if (last) {
+    if (last && filtered.some(wi => wi.key === last.key)) {
       opts.push({ label: `${last.key} — ${last.title}`, description: `Last viewed · ${last.status}`, item: last });
     }
-    for (const wi of items) {
+    for (const wi of filtered) {
       if (wi.key === last?.key) { continue; }
       opts.push({
         label:       `${wi.key} — ${wi.title}`,
-        description: `${cap(wi.type)} · ${wi.status}`,
+        description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}`,
         item:        wi
       });
     }
@@ -102,16 +129,20 @@ export class CommandRunner {
       return;
     }
 
+    // Filter by type
+    const filtered = await this.filterByType(items, `${label}'s items`);
+    if (!filtered) { return; }
+
     type Opt = vscode.QuickPickItem & { item: WorkItem };
-    const opts: Opt[] = items.map(wi => ({
+    const opts: Opt[] = filtered.map(wi => ({
       label:       `${wi.key} — ${wi.title}`,
-      description: `${cap(wi.type)} · ${wi.status}` + (wi.storyPoints ? ` · ${wi.storyPoints}pts` : ''),
+      description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}` + (wi.storyPoints ? ` · ${wi.storyPoints}pts` : ''),
       detail:      wi.sprint ? `Sprint: ${wi.sprint.split('\\').pop() ?? wi.sprint}` : 'Backlog',
       item:        wi
     }));
 
     const picked = await vscode.window.showQuickPick(opts, {
-      title:             `${label}'s work items (${items.length})`,
+      title:             `${label}'s work items (${filtered.length})`,
       placeHolder:       'Select to open in browser, or press Escape to close',
       matchOnDescription: true,
       matchOnDetail:      true,
@@ -326,10 +357,14 @@ export class CommandRunner {
       return;
     }
 
+    // Filter by type
+    const filtered = await this.filterByType(allItems, 'Move to sprint');
+    if (!filtered) { return; }
+
     type IQ = vscode.QuickPickItem & { wi: WorkItem };
-    const itemOpts: IQ[] = allItems.map(wi => ({
+    const itemOpts: IQ[] = filtered.map(wi => ({
       label:       `${wi.key} — ${wi.title}`,
-      description: `${cap(wi.type)} · ${wi.status} · ${wi.sprint?.split('\\').pop() ?? 'backlog'}`,
+      description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status} · ${wi.sprint?.split('\\').pop() ?? 'backlog'}`,
       wi
     }));
 
@@ -909,10 +944,14 @@ export class CommandRunner {
       return;
     }
 
+    // Filter by type
+    const filteredItems = await this.filterByType(srcItems, `${srcName} → ${dstName}`);
+    if (!filteredItems) { return; }
+
     type IQ2 = vscode.QuickPickItem & { wi: import('./types').WorkItem };
-    const itemOpts2: IQ2[] = srcItems.map(wi => ({
+    const itemOpts2: IQ2[] = filteredItems.map(wi => ({
       label:       `${wi.key} — ${wi.title}`,
-      description: `${cap(wi.type)} · ${wi.status}`,
+      description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}`,
       wi
     }));
 

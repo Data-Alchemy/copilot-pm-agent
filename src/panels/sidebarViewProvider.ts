@@ -39,10 +39,17 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       this.context.subscriptions
     );
 
+    // Clear view reference when disposed
+    webviewView.onDidDispose(() => { this._view = undefined; });
+
     // Send welcome after a short delay to let the webview initialize
-    setTimeout(() => this._send('bot',
-      '**PM Agent** — manage work items from the sidebar.\n\nType a command or click a chip below.'
-    ), 300);
+    setTimeout(() => {
+      if (this._view) {
+        this._send('bot',
+          '**PM Agent** — manage work items from the sidebar.\n\nType a command or click a chip below.'
+        );
+      }
+    }, 300);
   }
 
   // ── Message routing ─────────────────────────────────────────────────────

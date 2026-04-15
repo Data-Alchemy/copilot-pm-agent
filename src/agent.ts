@@ -2032,10 +2032,28 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  return { action: 'error' };
  }
 
+ // Filter by type
+ const availableTypes = [...new Set(sourceItems.map(wi => wi.rawTypeName ?? cap(wi.type)))].sort();
+ type TypeFilter = vscode.QuickPickItem & { typeName: string };
+ const typeFilterOpts: TypeFilter[] = availableTypes.map(t => {
+ const count = sourceItems.filter(wi => (wi.rawTypeName ?? cap(wi.type)) === t).length;
+ return { label: t, description: `${count} item${count !== 1 ? 's' : ''}`, typeName: t, picked: true };
+ });
+
+ const selectedTypes = await vscode.window.showQuickPick<TypeFilter>(typeFilterOpts, {
+ title: `Filter by type — which types to show from ${sourceName}?`,
+ placeHolder: 'Uncheck types you want to exclude, then press Enter',
+ canPickMany: true,
+ ignoreFocusOut: true
+ });
+ if (!selectedTypes?.length) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
+ const allowedTypes = new Set(selectedTypes.map(t => t.typeName));
+ const filteredItems = sourceItems.filter(wi => allowedTypes.has(wi.rawTypeName ?? cap(wi.type)));
+
  type ItemOpt = { label: string; description: string; item: WorkItem; picked: boolean };
- const itemOpts: ItemOpt[] = sourceItems.map(wi => ({
+ const itemOpts: ItemOpt[] = filteredItems.map(wi => ({
  label:       `${wi.key} — ${wi.title}`,
- description: [cap(wi.type), wi.status, wi.storyPoints ? `${wi.storyPoints} pts` : ''].filter(Boolean).join(' · '),
+ description: [wi.rawTypeName ?? cap(wi.type), wi.status, wi.storyPoints ? `${wi.storyPoints} pts` : ''].filter(Boolean).join(' · '),
  item:        wi,
  picked:      intent.workItemKey ? wi.key === intent.workItemKey : false
  }));

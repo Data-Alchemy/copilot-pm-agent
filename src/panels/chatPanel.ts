@@ -88,11 +88,13 @@ export class ChatPanel {
       ctx.subscriptions
     );
 
-    this.panel.onDidDispose(() => { ChatPanel.instance = undefined; }, null, ctx.subscriptions);
+    this.panel.onDidDispose(() => { ChatPanel.instance = undefined; this._disposed = true; }, null, ctx.subscriptions);
 
     // Send welcome message
-    setTimeout(() => this.send('bot', this.getWelcome()), 200);
+    setTimeout(() => { if (!this._disposed) { this.send('bot', this.getWelcome()); } }, 200);
   }
+
+  private _disposed = false;
 
   // ── Message routing ────────────────────────────────────────────────────────
 
@@ -302,10 +304,12 @@ export class ChatPanel {
   // ── Post message helpers ───────────────────────────────────────────────────
 
   private send(role: 'user' | 'bot', text: string, chips?: Array<{ label: string; cmd: string }>) {
+    if (this._disposed) { return; }
     this.panel.webview.postMessage({ type: 'message', role, text: this.mdToHtml(text), chips });
   }
 
   private sendTyping(on: boolean) {
+    if (this._disposed) { return; }
     this.panel.webview.postMessage({ type: 'typing', on });
   }
 
