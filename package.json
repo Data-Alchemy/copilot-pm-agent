@@ -2,7 +2,11 @@
   "name": "copilot-pm-agent",
   "displayName": "Copilot PM Agent",
   "description": "VS Code Agent that lets you open, estimate, and assign Jira & Azure DevOps work items via chat",
+<<<<<<< HEAD
   "version": "0.2.2",
+=======
+  "version": "0.6.2",
+>>>>>>> 928033b67b33aba81f5470d8a0011ab8d660a44c
   "publisher": "DataAlchemy",
   "engines": {
     "vscode": "^1.95.0"
@@ -248,12 +252,12 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile && npm run inject-wizard",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test": "jest --verbose",
     "package": "vsce package",
-    "inject-wizard": "node scripts/inject-wizard.js"
+    "inject-wizard": "node scripts/inject-wizard.js",
+    "vscode:prepublish": "npm run compile && npm run inject-wizard"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
