@@ -1,8 +1,6 @@
 # PM Agent — Jira & Azure DevOps for VS Code
 
 [![CI](https://github.com/Data-Alchemy/copilot-pm-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Data-Alchemy/copilot-pm-agent/actions/workflows/ci.yml)
-[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/DataAlchemy.copilot-pm-agent?label=marketplace&style=flat)](https://marketplace.visualstudio.com/items?itemName=DataAlchemy.copilot-pm-agent)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/DataAlchemy.copilot-pm-agent?style=flat)](https://marketplace.visualstudio.com/items?itemName=DataAlchemy.copilot-pm-agent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 With the PM Agent extension, you can manage Jira and Azure DevOps work items directly from Visual Studio Code. Create tickets, update statuses, assign tasks, track sprints, and migrate work items between platforms — all without leaving your editor. PM Agent streamlines your development workflow by keeping project management in the same application you use to write code.
