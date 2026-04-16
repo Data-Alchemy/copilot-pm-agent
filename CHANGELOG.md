@@ -8,6 +8,13 @@ Release changelogs are auto-generated from pull request labels via GitHub Action
 
 ---
 
+## [0.9.0] - 2026-04-16
+
+### Features
+
+- child assignee preservation and status filter on all item listings
+- child assignee preservation and status filter on all item listings
+
 ## [0.8.0] - 2026-04-16
 
 ### Features
