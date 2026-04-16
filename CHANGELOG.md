@@ -8,6 +8,25 @@ Release changelogs are auto-generated from pull request labels via GitHub Action
 
 ---
 
+## [0.8.0] - 2026-04-16
+
+### Features
+
+- child assignee preservation and status filter on all item listings
+- child assignee preservation and status filter on all item listings
+- child assignee preservation and status filter on all item listings
+
+## [0.7.0] - 2026-04-15
+
+### Features
+
+- adding filtering to the ticket display for all interfaces
+- adding filtering to the ticket display for all interfaces
+
+### Other Changes
+
+- cherry picked changes
+
 ## [0.2.2] - 2026-03-29
 
 See [release notes](https://github.com/Data-Alchemy/copilot-pm-agent/releases/tag/v0.2.2).
