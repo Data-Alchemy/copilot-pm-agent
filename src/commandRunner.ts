@@ -35,27 +35,51 @@ export class CommandRunner {
     return this.context.workspaceState.get<WorkItem>('pmAgent.lastItem');
   }
 
-  /** Prompt user to filter items by type. Returns filtered items or undefined if cancelled. */
-  private async filterByType(items: WorkItem[], context?: string): Promise<WorkItem[] | undefined> {
+  /** Prompt user to filter items by type and status. Returns filtered items or undefined if cancelled. */
+  private async filterItems(items: WorkItem[], context?: string): Promise<WorkItem[] | undefined> {
+    // Type filter
     const types = [...new Set(items.map(wi => wi.rawTypeName ?? cap(wi.type)))].sort();
-    if (types.length <= 1) { return items; } // nothing to filter
+    if (types.length > 1) {
+      type TF = vscode.QuickPickItem & { typeName: string };
+      const typeOpts: TF[] = types.map(t => {
+        const count = items.filter(wi => (wi.rawTypeName ?? cap(wi.type)) === t).length;
+        return { label: t, description: `${count} item${count !== 1 ? 's' : ''}`, typeName: t, picked: true };
+      });
 
-    type TF = vscode.QuickPickItem & { typeName: string };
-    const opts: TF[] = types.map(t => {
-      const count = items.filter(wi => (wi.rawTypeName ?? cap(wi.type)) === t).length;
-      return { label: t, description: `${count} item${count !== 1 ? 's' : ''}`, typeName: t, picked: true };
-    });
+      const pickedTypes = await vscode.window.showQuickPick<TF>(typeOpts, {
+        title: context ? `Filter by type — ${context}` : 'Filter by type',
+        placeHolder: 'Uncheck types to exclude, Enter to continue',
+        canPickMany: true,
+        ignoreFocusOut: true
+      });
+      if (!pickedTypes?.length) { return undefined; }
 
-    const picked = await vscode.window.showQuickPick<TF>(opts, {
-      title: context ? `Filter by type — ${context}` : 'Filter by type',
-      placeHolder: 'Uncheck types to exclude, Enter to continue',
-      canPickMany: true,
-      ignoreFocusOut: true
-    });
-    if (!picked?.length) { return undefined; }
+      const allowedTypes = new Set(pickedTypes.map(t => t.typeName));
+      items = items.filter(wi => allowedTypes.has(wi.rawTypeName ?? cap(wi.type)));
+    }
 
-    const allowed = new Set(picked.map(t => t.typeName));
-    return items.filter(wi => allowed.has(wi.rawTypeName ?? cap(wi.type)));
+    // Status filter
+    const statuses = [...new Set(items.map(wi => wi.status))].sort();
+    if (statuses.length > 1) {
+      type SF = vscode.QuickPickItem & { statusName: string };
+      const statusOpts: SF[] = statuses.map(s => {
+        const count = items.filter(wi => wi.status === s).length;
+        return { label: s, description: `${count} item${count !== 1 ? 's' : ''}`, statusName: s, picked: true };
+      });
+
+      const pickedStatuses = await vscode.window.showQuickPick<SF>(statusOpts, {
+        title: context ? `Filter by status — ${context}` : 'Filter by status',
+        placeHolder: 'Uncheck statuses to exclude, Enter to continue',
+        canPickMany: true,
+        ignoreFocusOut: true
+      });
+      if (!pickedStatuses?.length) { return undefined; }
+
+      const allowedStatuses = new Set(pickedStatuses.map(s => s.statusName));
+      items = items.filter(wi => allowedStatuses.has(wi.status));
+    }
+
+    return items;
   }
 
   // ── Pick a work item from a quick-pick list ──────────────────────────────
@@ -76,7 +100,7 @@ export class CommandRunner {
     }
 
     // Filter by type
-    const filtered = await this.filterByType(items, title);
+    const filtered = await this.filterItems(items, title);
     if (!filtered) { return undefined; }
 
     type Opt = vscode.QuickPickItem & { item?: WorkItem };
@@ -130,7 +154,7 @@ export class CommandRunner {
     }
 
     // Filter by type
-    const filtered = await this.filterByType(items, `${label}'s items`);
+    const filtered = await this.filterItems(items, `${label}'s items`);
     if (!filtered) { return; }
 
     type Opt = vscode.QuickPickItem & { item: WorkItem };
@@ -358,7 +382,7 @@ export class CommandRunner {
     }
 
     // Filter by type
-    const filtered = await this.filterByType(allItems, 'Move to sprint');
+    const filtered = await this.filterItems(allItems, 'Move to sprint');
     if (!filtered) { return; }
 
     type IQ = vscode.QuickPickItem & { wi: WorkItem };
@@ -945,7 +969,7 @@ export class CommandRunner {
     }
 
     // Filter by type
-    const filteredItems = await this.filterByType(srcItems, `${srcName} → ${dstName}`);
+    const filteredItems = await this.filterItems(srcItems, `${srcName} → ${dstName}`);
     if (!filteredItems) { return; }
 
     type IQ2 = vscode.QuickPickItem & { wi: import('./types').WorkItem };
@@ -1038,6 +1062,12 @@ export class CommandRunner {
       typeMap[srcType] = picked.rawType;
     }
 
+    // Pre-fetch destination members for assignee matching (used by parent + child migration)
+    let dstMembers: import('./types').User[] = [];
+    if (fields.has('assignee')) {
+      try { dstMembers = await dstProvider.getProjectMembers(); } catch { /* empty */ }
+    }
+
     // Run migration
     let moved = 0, failed = 0;
     const createdKeys: string[] = [];
@@ -1101,57 +1131,19 @@ export class CommandRunner {
               }
             }
 
-            // Migrate child items if selected
+            // Migrate child items recursively if selected
             if (fields.has('children')) {
-              const children = await (srcProvider as any).getChildItems?.(full.id ?? src.key).catch(() => []) ?? [];
-              if (children.length) {
-                progress.report({ message: `${idx+1}/${selectedItems.length}: ${src.key} — migrating ${children.length} child item(s)` });
-                for (const child of children) {
-                  try {
-                    const childFull = await srcProvider.getWorkItem(child.key);
-                    const childDesc = stripHtml(childFull.description ?? '');
-                    const childAc   = stripHtml((childFull as any).acceptanceCriteria ?? '');
-
-                    // Map child type
-                    const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
-                    let childDstType = typeMap[childSrcType];
-                    if (!childDstType) {
-                      // Check for match in destination types
-                      const match = dstTypes.find(d => d.toLowerCase() === childSrcType.toLowerCase());
-                      childDstType = match ?? dstTypeName; // fall back to parent's mapped type
-                    }
-
-                    let childDescFinal = fields.has('description') ? childDesc : undefined;
-                    if (!childDescFinal && direction === 'jira-to-ado') { childDescFinal = childFull.title; }
-
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const childDest: import('./types').WorkItem = await (dstProvider as any).createWorkItem({
-                      type:               childFull.type,
-                      rawTypeName:        childDstType,
-                      title:              childFull.title,
-                      description:        childDescFinal,
-                      acceptanceCriteria: fields.has('ac') && childAc ? childAc : undefined,
-                      storyPoints:        fields.has('points') ? (childFull.storyPoints ?? childFull.effort) : undefined,
-                      priority:           fields.has('priority') ? childFull.priority : undefined,
-                      labels:             fields.has('labels') && childFull.labels?.length ? childFull.labels : undefined,
-                    });
-
-                    // Link child to the migrated parent
-                    await (dstProvider as any).addParentLink?.(childDest.key ?? childDest.id, destItem.key ?? destItem.id).catch(() => {});
-
-                    // Migration comment on child
-                    await dstProvider.addComment(childDest.key,
-                      `Migrated from ${srcName} — original: ${child.url}, parent: ${destItem.key}`
-                    ).catch(() => {});
-
-                    createdKeys.push(`  [${child.key}](${child.url}) -> [${childDest.key}](${childDest.url}) (child of ${destItem.key})`);
-                    moved++;
-                  } catch (childErr) {
-                    failedKeys.push(`${child.key} (child): ${childErr instanceof Error ? childErr.message : String(childErr)}`);
-                    failed++;
-                  }
-                }
-              }
+              await this._migrateChildrenRecursive({
+                srcProvider, dstProvider, srcName, direction,
+                parentSrcId: full.id ?? src.key,
+                parentDstId: destItem.key ?? destItem.id,
+                parentDstKey: destItem.key,
+                fields, typeMap, dstTypes, dstMembers,
+                createdKeys, failedKeys,
+                counters: { moved: { value: 0 }, failed: { value: 0 } },
+                progress, progressPrefix: `${idx+1}/${selectedItems.length}: ${src.key}`,
+                depth: 0
+              });
             }
 
             createdKeys.push(`[${src.key}](${full.url}) -> [${destItem.key}](${destItem.url})`);
@@ -1187,4 +1179,116 @@ export class CommandRunner {
   /** Last migration result — read by chat panels */
   private _lastMigrateResult = '';
   get lastMigrateResult(): string { return this._lastMigrateResult; }
+
+  /** Recursively migrate children at all levels, up to 5 levels deep */
+  private async _migrateChildrenRecursive(opts: {
+    srcProvider: any;
+    dstProvider: any;
+    srcName: string;
+    direction: string;
+    parentSrcId: string;
+    parentDstId: string;
+    parentDstKey: string;
+    fields: Set<string>;
+    typeMap: Record<string, string>;
+    dstTypes: string[];
+    dstMembers: import('./types').User[];
+    createdKeys: string[];
+    failedKeys: string[];
+    counters: { moved: { value: number }; failed: { value: number } };
+    progress: any;
+    progressPrefix: string;
+    depth: number;
+  }): Promise<void> {
+    const MAX_DEPTH = 5;
+    if (opts.depth >= MAX_DEPTH) { return; }
+
+    const indent = '  '.repeat(opts.depth + 1);
+    const children: import('./types').WorkItem[] =
+      await opts.srcProvider.getChildItems?.(opts.parentSrcId).catch(() => []) ?? [];
+
+    if (!children.length) { return; }
+
+    opts.progress.report({
+      message: `${opts.progressPrefix} — level ${opts.depth + 1}: ${children.length} child item(s)`
+    });
+
+    for (const child of children) {
+      try {
+        const childFull = await opts.srcProvider.getWorkItem(child.key);
+        const childDesc = stripHtml(childFull.description ?? '');
+        const childAc   = stripHtml((childFull as any).acceptanceCriteria ?? '');
+
+        // Map child type
+        const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
+        let childDstType = opts.typeMap[childSrcType];
+        if (!childDstType) {
+          const match = opts.dstTypes.find(d => d.toLowerCase() === childSrcType.toLowerCase());
+          childDstType = match ?? 'Task';
+        }
+
+        let childDescFinal = opts.fields.has('description') ? childDesc : undefined;
+        if (!childDescFinal && opts.direction === 'jira-to-ado') { childDescFinal = childFull.title; }
+
+        // Resolve assignee
+        let childAssigneeId: string | undefined;
+        if (opts.fields.has('assignee') && childFull.assignee?.email) {
+          try {
+            if (opts.direction === 'ado-to-jira') {
+              const r = await opts.dstProvider.resolveUser?.(childFull.assignee.email);
+              childAssigneeId = r?.id ?? childFull.assignee.email;
+            } else {
+              const match = opts.dstMembers.find((m: any) =>
+                m.email?.toLowerCase() === childFull.assignee?.email?.toLowerCase()
+              );
+              childAssigneeId = match?.id;
+            }
+          } catch { /* skip */ }
+        }
+
+        const childDest: import('./types').WorkItem = await opts.dstProvider.createWorkItem({
+          type:               childFull.type,
+          rawTypeName:        childDstType,
+          title:              childFull.title,
+          description:        childDescFinal,
+          acceptanceCriteria: opts.fields.has('ac') && childAc ? childAc : undefined,
+          storyPoints:        opts.fields.has('points') ? (childFull.storyPoints ?? childFull.effort) : undefined,
+          priority:           opts.fields.has('priority') ? childFull.priority : undefined,
+          labels:             opts.fields.has('labels') && childFull.labels?.length ? childFull.labels : undefined,
+          assigneeId:         childAssigneeId,
+        });
+
+        // Link to parent
+        await opts.dstProvider.addParentLink?.(
+          childDest.key ?? childDest.id,
+          opts.parentDstId
+        ).catch(() => {});
+
+        // Migration comment
+        await opts.dstProvider.addComment(childDest.key,
+          `Migrated from ${opts.srcName} — original: ${child.url}, parent: ${opts.parentDstKey}`
+        ).catch(() => {});
+
+        opts.createdKeys.push(
+          `${indent}[${child.key}](${child.url}) -> [${childDest.key}](${childDest.url}) (child of ${opts.parentDstKey})`
+        );
+        opts.counters.moved.value++;
+
+        // Recurse into this child's children
+        await this._migrateChildrenRecursive({
+          ...opts,
+          parentSrcId:  childFull.id ?? child.key,
+          parentDstId:  childDest.key ?? childDest.id,
+          parentDstKey: childDest.key,
+          depth:        opts.depth + 1,
+        });
+
+      } catch (childErr) {
+        opts.failedKeys.push(
+          `${child.key} (child L${opts.depth + 1}): ${childErr instanceof Error ? childErr.message : String(childErr)}`
+        );
+        opts.counters.failed.value++;
+      }
+    }
+  }
 }

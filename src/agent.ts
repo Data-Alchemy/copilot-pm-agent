@@ -2048,7 +2048,26 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  });
  if (!selectedTypes?.length) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
  const allowedTypes = new Set(selectedTypes.map(t => t.typeName));
- const filteredItems = sourceItems.filter(wi => allowedTypes.has(wi.rawTypeName ?? cap(wi.type)));
+ let filteredItems = sourceItems.filter(wi => allowedTypes.has(wi.rawTypeName ?? cap(wi.type)));
+
+ // Filter by status
+ const availableStatuses = [...new Set(filteredItems.map(wi => wi.status))].sort();
+ if (availableStatuses.length > 1) {
+ type StatusFilter = vscode.QuickPickItem & { statusName: string };
+ const statusOpts: StatusFilter[] = availableStatuses.map(s => {
+ const count = filteredItems.filter(wi => wi.status === s).length;
+ return { label: s, description: `${count} item${count !== 1 ? 's' : ''}`, statusName: s, picked: true };
+ });
+ const selectedStatuses = await vscode.window.showQuickPick<StatusFilter>(statusOpts, {
+ title: `Filter by status â€” ${sourceName}`,
+ placeHolder: 'Uncheck statuses to exclude, then press Enter',
+ canPickMany: true,
+ ignoreFocusOut: true
+ });
+ if (!selectedStatuses?.length) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
+ const allowedStatuses = new Set(selectedStatuses.map(s => s.statusName));
+ filteredItems = filteredItems.filter(wi => allowedStatuses.has(wi.status));
+ }
 
  type ItemOpt = { label: string; description: string; item: WorkItem; picked: boolean };
  const itemOpts: ItemOpt[] = filteredItems.map(wi => ({
@@ -2142,7 +2161,14 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  if (!confirm || confirm.value === 'no') { stream.markdown('_Cancelled._'); return { action: 'error' }; }
 
  // Migrate each item
- const created: Array<{ source: WorkItem; dest: WorkItem; children: Array<{ source: WorkItem; dest: WorkItem }> }> = [];
+ interface MigratedNode { source: WorkItem; dest: WorkItem; children: MigratedNode[] }
+ // Pre-fetch destination members for assignee matching
+ let dstMembers: User[] = [];
+ if (fields.has('assignee')) {
+ try { dstMembers = await destProvider.getProjectMembers(); } catch { /* empty */ }
+ }
+
+ const created: MigratedNode[] = [];
  const failed:  Array<{ key: string; error: string }> = [];
 
  for (const opt of selectedItems) {
@@ -2214,51 +2240,73 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  `Migrated from ${sourceName} â€” original: ${full.url}`
  ).catch(() => { /* ignore */ });
 
- // Migrate child items if selected
- const migratedChildren: Array<{ source: WorkItem; dest: WorkItem }> = [];
+ // Migrate child items recursively if selected
+ const migratedChildren: MigratedNode[] = [];
  if (fields.has('children')) {
- // eslint-disable-next-line @typescript-eslint/no-explicit-any
- const children: WorkItem[] = await (sourceProvider as any).getChildItems?.(full.id ?? src.key).catch(() => []) ?? [];
- if (children.length) {
- stream.progress(`Copying ${children.length} child item(s) of ${src.key}...`);
- for (const child of children) {
- try {
- const childFull = await sourceProvider.getWorkItem(child.key);
- const childDesc = stripHtml(childFull.description ?? '');
- const childAc   = stripHtml((childFull as any).acceptanceCriteria ?? '');
- const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
- let childDstType = typeMap[childSrcType];
- if (!childDstType) {
- const match = dstTypes.find(d => d.toLowerCase() === childSrcType.toLowerCase());
- childDstType = match ?? dstTypeName;
- }
- let childDescFinal = fields.has('description') ? childDesc : undefined;
- if (!childDescFinal && direction === 'jira-to-ado') { childDescFinal = childFull.title; }
+ const migrateChildrenRec = async (
+   parentSrcId: string, parentDstId: string, parentDstKey: string,
+   depth: number
+ ): Promise<MigratedNode[]> => {
+   if (depth >= 5) { return []; }
+   const kids: WorkItem[] = await (sourceProvider as any).getChildItems?.(parentSrcId).catch(() => []) ?? [];
+   if (!kids.length) { return []; }
+   stream.progress(`Copying ${kids.length} child item(s) at level ${depth + 1}...`);
+   const nodes: MigratedNode[] = [];
+   for (const child of kids) {
+     try {
+       const cf = await sourceProvider.getWorkItem(child.key);
+       const cDesc = stripHtml(cf.description ?? '');
+       const cAc = stripHtml((cf as any).acceptanceCriteria ?? '');
+       const cSrcType = cf.rawTypeName ?? cap(cf.type);
+       let cDstType = typeMap[cSrcType];
+       if (!cDstType) {
+         const match = dstTypes.find(d => d.toLowerCase() === cSrcType.toLowerCase());
+         cDstType = match ?? 'Task';
+       }
+       let cDescF = fields.has('description') ? cDesc : undefined;
+       if (!cDescF && direction === 'jira-to-ado') { cDescF = cf.title; }
 
- const childDest = await destProvider.createWorkItem({
- type: childFull.type,
- rawTypeName: childDstType,
- title: childFull.title,
- description: childDescFinal,
- acceptanceCriteria: fields.has('ac') && childAc ? childAc : undefined,
- storyPoints: fields.has('points') ? (childFull.storyPoints ?? childFull.effort) : undefined,
- priority: fields.has('priority') ? childFull.priority : undefined,
- labels: fields.has('labels') && childFull.labels?.length ? childFull.labels : undefined,
- });
+       // Resolve assignee for child
+       let cAssigneeId: string | undefined;
+       if (fields.has('assignee') && cf.assignee?.email) {
+         try {
+           if (direction === 'jira-to-ado') {
+             const match = dstMembers.find(m =>
+               m.email?.toLowerCase() === cf.assignee!.email?.toLowerCase() ||
+               m.displayName.toLowerCase() === cf.assignee!.displayName.toLowerCase()
+             );
+             cAssigneeId = match?.id;
+           } else {
+             const resolved = await (destProvider as any).resolveUser?.(cf.assignee.email);
+             cAssigneeId = resolved?.id;
+           }
+         } catch { /* skip */ }
+       }
 
- // Link child to parent
- // eslint-disable-next-line @typescript-eslint/no-explicit-any
- await (destProvider as any).addParentLink?.(childDest.key ?? childDest.id, destItem.key ?? destItem.id).catch(() => {});
- await destProvider.addComment(childDest.key,
- `Migrated from ${sourceName} â€” original: ${child.url}, parent: ${destItem.key}`
- ).catch(() => {});
+       const cDest = await destProvider.createWorkItem({
+         type: cf.type, rawTypeName: cDstType, title: cf.title,
+         description: cDescF,
+         acceptanceCriteria: fields.has('ac') && cAc ? cAc : undefined,
+         storyPoints: fields.has('points') ? (cf.storyPoints ?? cf.effort) : undefined,
+         priority: fields.has('priority') ? cf.priority : undefined,
+         labels: fields.has('labels') && cf.labels?.length ? cf.labels : undefined,
+         assigneeId: cAssigneeId,
+       });
+       await (destProvider as any).addParentLink?.(cDest.key ?? cDest.id, parentDstId).catch(() => {});
+       await destProvider.addComment(cDest.key,
+         `Migrated from ${sourceName} â€” original: ${child.url}, parent: ${parentDstKey}`
+       ).catch(() => {});
 
- migratedChildren.push({ source: childFull, dest: childDest });
- } catch (childErr) {
- failed.push({ key: `${child.key} (child)`, error: childErr instanceof Error ? childErr.message.slice(0, 120) : String(childErr) });
- }
- }
- }
+       // Recurse
+       const grandchildren = await migrateChildrenRec(cf.id ?? child.key, cDest.key ?? cDest.id, cDest.key, depth + 1);
+       nodes.push({ source: cf, dest: cDest, children: grandchildren });
+     } catch (childErr) {
+       failed.push({ key: `${child.key} (child L${depth+1})`, error: childErr instanceof Error ? childErr.message.slice(0, 120) : String(childErr) });
+     }
+   }
+   return nodes;
+ };
+ migratedChildren.push(...await migrateChildrenRec(full.id ?? src.key, destItem.key ?? destItem.id, destItem.key, 0));
  }
 
  created.push({ source: full, dest: destItem, children: migratedChildren });
@@ -2270,13 +2318,17 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  // Report results with clickable links
  if (created.length) {
  const lines: string[] = [];
- for (const { source, dest, children } of created) {
- lines.push(`- [${source.key}](${source.url}) â†’ [${dest.key}](${dest.url}) ${dest.title}`);
- for (const c of children) {
- lines.push(`  - [${c.source.key}](${c.source.url}) â†’ [${c.dest.key}](${c.dest.url}) ${c.dest.title} _(child)_`);
- }
- }
- const totalCount = created.length + created.reduce((n, c) => n + c.children.length, 0);
+ const renderTree = (nodes: typeof created, indent: string) => {
+   for (const { source, dest, children } of nodes) {
+     const suffix = indent ? ' _(child)_' : '';
+     lines.push(`${indent}- [${source.key}](${source.url}) â†’ [${dest.key}](${dest.url}) ${dest.title}${suffix}`);
+     renderTree(children, indent + '  ');
+   }
+ };
+ renderTree(created, '');
+ let totalCount = 0;
+ const countTree = (nodes: typeof created): number => nodes.reduce((n, c) => n + 1 + countTree(c.children), 0);
+ totalCount = countTree(created);
  stream.markdown(
  formatSuccess(`Migrated **${totalCount}** item${totalCount !== 1 ? 's' : ''} to ${destName}`) +
  '\n\n' + lines.join('\n')
