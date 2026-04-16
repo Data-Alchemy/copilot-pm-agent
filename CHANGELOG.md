@@ -8,6 +8,12 @@ Release changelogs are auto-generated from pull request labels via GitHub Action
 
 ---
 
+## [0.9.1] - 2026-04-16
+
+### Bug Fixes
+
+- removing broken badges from readme
+
 ## [0.9.0] - 2026-04-16
 
 ### Features
