@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.0.4] - 2026-04-17
+
+### Bug Fixes
+
+- comment migration from ADO to Jira — fetch fallback and history extraction and merge
+- comment migration from ADO to Jira — fetch fallback and history extraction
+
 ## [1.0.3] - 2026-04-17
 
 ### Bug Fixes
