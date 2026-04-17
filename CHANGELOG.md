@@ -6,6 +6,40 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.0.2] - 2026-04-17
+
+### Bug Fixes
+
+- correcting mapping allocation for migration commands, increased max return count for tickets during migration
+
+## [1.0.1] - 2026-04-17
+
+### Bug Fixes
+
+- there was a issue with migration function where if the ticket type was invalid it would not migrate those items added a mapping object
+
+### Other Changes
+
+- Merge branch 'main' of https://github.com/Data-Alchemy/copilot-pm-agent
+
+## [1.0.0] - 2026-04-17
+
+### Breaking Changes
+
+- add GitHub Projects as third platform provider
+
+### Features
+
+- add GitHub Projects as third platform provider
+
+### Bug Fixes
+
+- add explicit types for strict mode compliance
+
+### Other Changes
+
+- Merge branch 'main' of https://github.com/Data-Alchemy/copilot-pm-agent
+
 ## [Unreleased]
 
 ### Features
