@@ -138,7 +138,7 @@ export class CommandRunner {
 
   // ── LIST ─────────────────────────────────────────────────────────────────
 
-  async list() {
+  async list(): Promise<string> {
     const { provider } = await this.getProvider();
     const du = await this.defaultUser();
     const label = du?.displayName ?? 'your';
@@ -149,39 +149,26 @@ export class CommandRunner {
     );
 
     if (!items.length) {
-      vscode.window.showInformationMessage('No work items found. Check your default user with PM Agent: Set Default User.');
-      return;
+      return 'No work items found. Run `/setuser` to set your default user.';
     }
 
-    // Filter by type
+    // Filter by type and status
     const filtered = await this.filterItems(items, `${label}'s items`);
-    if (!filtered) { return; }
+    if (!filtered) { return '_Cancelled._'; }
 
-    type Opt = vscode.QuickPickItem & { item: WorkItem };
-    const opts: Opt[] = filtered.map(wi => ({
-      label:       `${wi.key} — ${wi.title}`,
-      description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}` + (wi.storyPoints ? ` · ${wi.storyPoints}pts` : ''),
-      detail:      wi.sprint ? `Sprint: ${wi.sprint.split('\\').pop() ?? wi.sprint}` : 'Backlog',
-      item:        wi
-    }));
+    const lines = filtered.slice(0, 30).map(wi =>
+      `- **[${wi.key}](${wi.url})** ${wi.title} \`${wi.status}\`` +
+      (wi.rawTypeName ? ` · ${wi.rawTypeName}` : '') +
+      (wi.storyPoints ? ` · ${wi.storyPoints}pts` : '') +
+      (wi.assignee ? ` — ${wi.assignee.displayName}` : '')
+    ).join('\n');
 
-    const picked = await vscode.window.showQuickPick(opts, {
-      title:             `${label}'s work items (${filtered.length})`,
-      placeHolder:       'Select to open in browser, or press Escape to close',
-      matchOnDescription: true,
-      matchOnDetail:      true,
-      ignoreFocusOut:    true
-    });
-
-    if (picked) {
-      this.setLastItem(picked.item);
-      await vscode.env.openExternal(vscode.Uri.parse(picked.item.url));
-    }
+    return `**${label}'s items (${filtered.length}):**\n\n${lines}`;
   }
 
   // ── OPEN ─────────────────────────────────────────────────────────────────
 
-  async open(keyHint?: string) {
+  async open(keyHint?: string): Promise<string> {
     const { provider } = await this.getProvider();
 
     let key = keyHint;
@@ -193,7 +180,7 @@ export class CommandRunner {
         ignoreFocusOut: true
       });
     }
-    if (!key?.trim()) { return; }
+    if (!key?.trim()) { return '_Cancelled._'; }
 
     let item: import('./types').WorkItem | null = null;
     try {
@@ -201,24 +188,20 @@ export class CommandRunner {
         { location: vscode.ProgressLocation.Notification, title: `Loading ${key}...` },
         () => provider.getWorkItem(key!.trim())
       ) as unknown as Promise<import('./types').WorkItem>);
-    } catch(e) { vscode.window.showErrorMessage(String(e)); return; }
+    } catch(e) { return `Error: ${e instanceof Error ? e.message : String(e)}`; }
 
-    if (!item) { return; }
+    if (!item) { return 'Item not found.'; }
     this.setLastItem(item);
 
-    const info = [
-      `${item.key}  ${item.title}`,
-      `Type: ${cap(item.type)}   Status: ${item.status}`,
-      item.assignee ? `Assignee: ${item.assignee.displayName}` : '',
-      item.storyPoints ? `Points: ${item.storyPoints}` : '',
-      item.sprint ? `Sprint: ${item.sprint.split('\\').pop() ?? item.sprint}` : '',
-      item.description ? `\n${item.description.slice(0, 300)}` : ''
+    const pts = item.storyPoints ?? item.effort;
+    return [
+      `## [${item.key}](${item.url}) ${item.title}`,
+      `**Type:** ${item.rawTypeName ?? cap(item.type)}   **Status:** \`${item.status}\``,
+      item.assignee  ? `**Assignee:** ${item.assignee.displayName}` : '',
+      pts            ? `**Points:** ${pts}` : '',
+      item.sprint    ? `**Sprint:** ${item.sprint.split('\\').pop()}` : '',
+      item.description ? `\n${stripHtml(item.description).slice(0, 400)}` : ''
     ].filter(Boolean).join('\n');
-
-    const choice = await vscode.window.showInformationMessage(info, 'Open in Browser', 'Close');
-    if (choice === 'Open in Browser') {
-      await vscode.env.openExternal(vscode.Uri.parse(item.url));
-    }
   }
 
   // ── STATUS ───────────────────────────────────────────────────────────────
@@ -485,7 +468,7 @@ export class CommandRunner {
 
   // ── SPRINT ───────────────────────────────────────────────────────────────
 
-  async sprint() {
+  async sprint(): Promise<string> {
     const { provider, creds } = await this.getProvider();
 
     let sprints: import('./types').Sprint[] = [];
@@ -500,8 +483,7 @@ export class CommandRunner {
 
     const active = sprints.find(s => s.state === 'active');
     if (!active) {
-      vscode.window.showInformationMessage('No active sprint found.');
-      return;
+      return 'No active sprint found.';
     }
 
     const du = await this.defaultUser();
@@ -514,18 +496,19 @@ export class CommandRunner {
       maxResults: 50
     }).catch(() => [] as WorkItem[]);
 
-    const summary = [
-      `Sprint: ${active.name}`,
-      active.endDate ? `Ends: ${active.endDate.slice(0,10)}` : '',
-      `Items: ${items.length}`,
+    const lines = [
+      `## Sprint: ${active.name}`,
+      active.endDate ? `**Ends:** ${active.endDate.slice(0, 10)}` : '',
+      `**Items:** ${items.length}`,
       '',
-      ...items.slice(0, 15).map(wi => `${wi.key}  [${wi.status}]  ${wi.title}`)
+      ...items.slice(0, 20).map(wi =>
+        `- **[${wi.key}](${wi.url})** ${wi.title} \`${wi.status}\`` +
+        (wi.assignee ? ` — ${wi.assignee.displayName}` : '') +
+        (wi.storyPoints ? ` (${wi.storyPoints}pts)` : '')
+      )
     ].filter(s => s !== undefined).join('\n');
 
-    const choice = await vscode.window.showInformationMessage(summary, { modal: true }, 'Open All in Browser', 'Close');
-    if (choice === 'Open All in Browser' && items.length) {
-      await vscode.env.openExternal(vscode.Uri.parse(items[0].url));
-    }
+    return lines;
   }
 
   // ── DEBUG ────────────────────────────────────────────────────────────────
@@ -782,22 +765,56 @@ export class CommandRunner {
     if (!confirm || confirm.value === 'no') { return; }
 
     // ── 10. Create ────────────────────────────────────────────────────────
-    // Load stored field defaults for this issue type (Jira only)
+    // Load stored field defaults and prompt for missing required fields (Jira only)
     let customFields: Record<string, unknown> | undefined;
     if (platform === 'jira' && rawTypeName) {
+      customFields = {};
       const allDefaults = this.credMgr.getJiraFieldDefaults();
-      const typeDefaults = allDefaults[rawTypeName];
-      if (typeDefaults && Object.keys(typeDefaults).length) {
-        // Convert option values from {id, value} to the Jira API format {id}
-        customFields = {};
-        for (const [k, v] of Object.entries(typeDefaults)) {
-          if (v && typeof v === 'object' && 'id' in (v as any)) {
-            customFields[k] = { id: (v as any).id };
-          } else {
-            customFields[k] = v;
-          }
+      const typeDefaults = allDefaults[rawTypeName] ?? {};
+
+      for (const [k, v] of Object.entries(typeDefaults)) {
+        if (v && typeof v === 'object' && 'id' in (v as any)) {
+          customFields[k] = { id: (v as any).id };
+        } else {
+          customFields[k] = v;
         }
       }
+
+      // Prompt for any required fields that don't have stored defaults
+      try {
+        if ((provider as any).getCreateFields) {
+          const createFields = await (provider as any).getCreateFields(rawTypeName);
+          const missing = createFields.filter((f: any) =>
+            f.required && !customFields![f.key]
+          );
+
+          for (const field of missing) {
+            if (field.allowedValues?.length) {
+              type FO = vscode.QuickPickItem & { fv: { id: string; value: string } };
+              const opts: FO[] = field.allowedValues.map((v: any) => ({
+                label: v.value, fv: v
+              }));
+              const pick = await vscode.window.showQuickPick(opts, {
+                title: `${field.name} (required)`,
+                placeHolder: `Select a value for ${field.name}`,
+                ignoreFocusOut: true
+              });
+              if (pick) { customFields[field.key] = { id: pick.fv.id }; }
+            } else if (field.type === 'string' || field.type === 'number') {
+              const val = await vscode.window.showInputBox({
+                title: `${field.name} (required)`,
+                prompt: field.type === 'number' ? 'Enter a number' : 'Enter a value',
+                ignoreFocusOut: true
+              });
+              if (val?.trim()) {
+                customFields[field.key] = field.type === 'number' ? Number(val) : val.trim();
+              }
+            }
+          }
+        }
+      } catch { /* proceed with defaults only */ }
+
+      if (!Object.keys(customFields).length) { customFields = undefined; }
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -945,35 +962,41 @@ export class CommandRunner {
 
   async migrate() {
     const both = await this.credMgr.getBothCredentials();
-    if (!both.jira) {
-      vscode.window.showErrorMessage('Jira credentials not configured. Run PM Agent: Configure Platform.');
+    const configured: Array<{ platform: string; label: string; creds: import('./types').ApiCredentials }> = [];
+    if (both.jira)   { configured.push({ platform: 'jira',   label: 'Jira',           creds: both.jira }); }
+    if (both.ado)    { configured.push({ platform: 'ado',    label: 'Azure DevOps',   creds: both.ado }); }
+    if (both.github) { configured.push({ platform: 'github', label: 'GitHub Projects', creds: both.github }); }
+
+    if (configured.length < 2) {
+      vscode.window.showErrorMessage(
+        `Migration requires at least 2 platforms configured (found ${configured.length}). Run PM Agent: Configure Platform.`
+      );
       return;
     }
-    if (!both.ado) {
-      vscode.window.showErrorMessage('Azure DevOps credentials not configured. Run PM Agent: Configure Platform.');
-      return;
-    }
+
+    // Pick source
+    const srcPick = await vscode.window.showQuickPick(
+      configured.map(c => ({ label: `From: ${c.label}`, value: c.platform })),
+      { title: 'Migration source', ignoreFocusOut: true }
+    );
+    if (!srcPick) { return; }
+
+    // Pick destination (exclude source)
+    const dstOptions = configured.filter(c => c.platform !== srcPick.value);
+    const dstPick = await vscode.window.showQuickPick(
+      dstOptions.map(c => ({ label: `To: ${c.label}`, value: c.platform })),
+      { title: 'Migration destination', ignoreFocusOut: true }
+    );
+    if (!dstPick) { return; }
 
     const { createProvider } = await import('./providers/providerFactory');
-    const jiraP = createProvider(both.jira);
-    const adoP  = createProvider(both.ado);
-    const creds = await this.credMgr.getCredentials();
-
-    // Direction
-    const dirOpts = [
-      { label: 'Jira to Azure DevOps',  description: 'Copy Jira tickets to ADO', value: 'jira-to-ado' },
-      { label: 'Azure DevOps to Jira',  description: 'Copy ADO tickets to Jira',  value: 'ado-to-jira' }
-    ];
-    const dirPick = await vscode.window.showQuickPick(dirOpts, {
-      title: 'Migration direction', ignoreFocusOut: true
-    });
-    if (!dirPick) { return; }
-
-    const direction  = dirPick.value as 'jira-to-ado' | 'ado-to-jira';
-    const srcProvider = direction === 'jira-to-ado' ? jiraP : adoP;
-    const dstProvider = direction === 'jira-to-ado' ? adoP  : jiraP;
-    const srcName     = direction === 'jira-to-ado' ? 'Jira'         : 'Azure DevOps';
-    const dstName     = direction === 'jira-to-ado' ? 'Azure DevOps' : 'Jira';
+    const srcEntry = configured.find(c => c.platform === srcPick.value)!;
+    const dstEntry = configured.find(c => c.platform === dstPick.value)!;
+    const srcProvider = createProvider(srcEntry.creds);
+    const dstProvider = createProvider(dstEntry.creds);
+    const srcName = srcEntry.label;
+    const dstName = dstEntry.label;
+    const direction = `${srcPick.value}-to-${dstPick.value}`;
 
     // Select scope — assigned to me or all project items
     const scopeOpts = [

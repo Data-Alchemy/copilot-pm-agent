@@ -1045,13 +1045,14 @@ export class PmAgent {
 
  stream.progress('Creating story...');
 
- // Load stored field defaults for this issue type (Jira only)
+ // Load stored field defaults and prompt for missing required fields (Jira only)
  let customFields: Record<string, unknown> | undefined;
  if (platform === 'jira' && rawTypeName) {
- const allDefaults = this.credMgr.getJiraFieldDefaults();
- const typeDefaults = allDefaults[rawTypeName];
- if (typeDefaults && Object.keys(typeDefaults).length) {
  customFields = {};
+ const allDefaults = this.credMgr.getJiraFieldDefaults();
+ const typeDefaults = allDefaults[rawTypeName] ?? {};
+
+ // Apply stored defaults
  for (const [k, v] of Object.entries(typeDefaults)) {
  if (v && typeof v === 'object' && 'id' in (v as any)) {
  customFields[k] = { id: (v as any).id };
@@ -1059,7 +1060,60 @@ export class PmAgent {
  customFields[k] = v;
  }
  }
+
+ // Scan for required fields that still need values
+ try {
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ const jiraP = provider as any;
+ if (jiraP.getCreateFields) {
+ stream.progress('Checking required fields...');
+ const createFields = await jiraP.getCreateFields(rawTypeName);
+ const missing = createFields.filter((f: any) =>
+   f.required && !customFields![f.key]
+ );
+
+ for (const field of missing) {
+   if (field.allowedValues?.length) {
+     // AI suggestion for option fields
+     let aiSuggestion: string | undefined;
+     if (aiReady && enhancement) {
+       const fieldDesc = `${field.name}: ${field.allowedValues.map((v: any) => v.value).join(', ')}`;
+       // Simple heuristic — check if AI description mentions any value
+       const combined = `${p.title} ${p.description ?? ''}`.toLowerCase();
+       aiSuggestion = field.allowedValues.find((v: any) =>
+         combined.includes(v.value.toLowerCase())
+       )?.value;
+     }
+
+     type FO = vscode.QuickPickItem & { fieldValue: { id: string; value: string } };
+     const opts: FO[] = field.allowedValues.map((v: any) => ({
+       label: v.value + (aiSuggestion === v.value ? ' (suggested)' : ''),
+       fieldValue: v
+     }));
+
+     const pick = await vscode.window.showQuickPick(opts, {
+       title: `${field.name} (required)`,
+       placeHolder: aiSuggestion ? `Suggested: ${aiSuggestion}` : `Select a value for ${field.name}`,
+       ignoreFocusOut: true
+     });
+     if (pick) {
+       customFields[field.key] = { id: pick.fieldValue.id };
+     }
+   } else if (field.type === 'string' || field.type === 'number') {
+     const val = await vscode.window.showInputBox({
+       title: `${field.name} (required)`,
+       prompt: field.type === 'number' ? 'Enter a number' : 'Enter a value',
+       ignoreFocusOut: true
+     });
+     if (val?.trim()) {
+       customFields[field.key] = field.type === 'number' ? Number(val) : val.trim();
+     }
+   }
  }
+ }
+ } catch { /* field scan failed — proceed with defaults only */ }
+
+ if (!Object.keys(customFields).length) { customFields = undefined; }
  }
 
  // eslint-disable-next-line @typescript-eslint/no-explicit-any

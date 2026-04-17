@@ -1,5 +1,5 @@
 // src/types.ts
-export type Platform = 'jira' | 'azuredevops';
+export type Platform = 'jira' | 'azuredevops' | 'github';
 export type WorkItemType = 'story' | 'task' | 'bug' | 'epic' | 'subtask' | 'feature' | 'testcase';
 
 export interface WorkItem {
@@ -100,6 +100,10 @@ export interface ApiCredentials {
   adoOrgUrl?:    string;
   adoProject?:   string;
   adoToken?:     string;
+  githubOwner?:  string;
+  githubRepo?:   string;
+  githubToken?:  string;
+  githubProjectNumber?: number;
 }
 
 export interface AgentToolResult {

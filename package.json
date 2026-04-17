@@ -180,7 +180,8 @@
           "type": "string",
           "enum": [
             "jira",
-            "azuredevops"
+            "azuredevops",
+            "github"
           ],
           "default": "jira",
           "description": "Which platform to connect to"
@@ -204,6 +205,18 @@
         "pmAgent.azureDevOps.project": {
           "type": "string",
           "description": "Azure DevOps project name"
+        },
+        "pmAgent.github.owner": {
+          "type": "string",
+          "description": "GitHub owner (organization or username)"
+        },
+        "pmAgent.github.repo": {
+          "type": "string",
+          "description": "GitHub repository name"
+        },
+        "pmAgent.github.projectNumber": {
+          "type": "number",
+          "description": "GitHub Projects v2 number (optional — for project board integration)"
         },
         "pmAgent.ai.provider": {
           "type": "string",

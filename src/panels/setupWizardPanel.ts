@@ -1,7 +1,7 @@
 // src/panels/setupWizardPanel.ts
 import * as vscode from 'vscode';
 
-export type Platform = 'jira' | 'azuredevops';
+export type Platform = 'jira' | 'azuredevops' | 'github';
 
 export interface SetupResult {
   platform:     Platform;
@@ -12,12 +12,17 @@ export interface SetupResult {
   adoOrgUrl?:   string;
   adoProject?:  string;
   adoToken?:    string;
+  githubOwner?: string;
+  githubRepo?:  string;
+  githubToken?: string;
+  githubProjectNumber?: number;
   /** Per-issueType default values for custom/required fields */
   jiraFieldDefaults?: Record<string, Record<string, unknown>>;
 }
 
 const ALLOWED_URLS: Record<string, string> = {
   jiraTokenPage: 'https://id.atlassian.com/manage-profile/security/api-tokens',
+  githubTokenPage: 'https://github.com/settings/tokens',
 };
 
 export class SetupWizardPanel {
@@ -120,6 +125,15 @@ export class SetupWizardPanel {
                   await context.globalState.update('pmAgent.jiraFieldDefaults', data.jiraFieldDefaults);
                 }
                 panel.webview.postMessage({ type: 'saveSuccess', platform: 'jira' });
+              } else if (data.platform === 'github') {
+                await config.update('platform', 'github', vscode.ConfigurationTarget.Global);
+                await config.update('github.owner', data.githubOwner!, vscode.ConfigurationTarget.Global);
+                await config.update('github.repo', data.githubRepo!, vscode.ConfigurationTarget.Global);
+                await config.update('github.projectNumber', data.githubProjectNumber ?? 0, vscode.ConfigurationTarget.Global);
+                if (data.githubToken) {
+                  await context.secrets.store('pmAgent.github.personalAccessToken', data.githubToken);
+                }
+                panel.webview.postMessage({ type: 'saveSuccess', platform: 'github' });
               } else {
                 await config.update('platform', 'azuredevops', vscode.ConfigurationTarget.Global);
                 await config.update('azureDevOps.orgUrl', data.adoOrgUrl!, vscode.ConfigurationTarget.Global);
@@ -193,6 +207,64 @@ export class SetupWizardPanel {
               } catch (err) {
                 panel.webview.postMessage({ type: 'tokenStatus', platform: 'ado', valid: false, error: err instanceof Error ? err.message : String(err) });
               }
+            } else if (platform === 'github') {
+              let token = String(msg.token ?? '');
+              if (msg.useStored) {
+                token = await context.secrets.get('pmAgent.github.personalAccessToken') ?? '';
+              }
+              if (!token) {
+                panel.webview.postMessage({ type: 'tokenStatus', platform: 'github', valid: false, error: 'Missing token' });
+                break;
+              }
+              try {
+                const res = await globalThis.fetch('https://api.github.com/user', {
+                  headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }
+                });
+                if (res.ok) {
+                  const user = await res.json() as any;
+                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'github', valid: true, user: user.login ?? 'OK' });
+                } else {
+                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'github', valid: false, error: `HTTP ${res.status}` });
+                }
+              } catch (err) {
+                panel.webview.postMessage({ type: 'tokenStatus', platform: 'github', valid: false, error: err instanceof Error ? err.message : String(err) });
+              }
+            }
+            break;
+          }
+          case 'fetchGithubProjects': {
+            const ghOwner = String(msg.owner ?? '');
+            let ghToken = String(msg.token ?? '');
+            if (msg.useStored) {
+              ghToken = await context.secrets.get('pmAgent.github.personalAccessToken') ?? '';
+            }
+            if (!ghOwner || !ghToken) {
+              panel.webview.postMessage({ type: 'githubProjectsError', error: 'Missing owner or token' });
+              break;
+            }
+            try {
+              // Try org projects, then user projects
+              let projects: Array<{ number: number; title: string }> = [];
+              for (const ownerType of ['organization', 'user']) {
+                try {
+                  const res = await globalThis.fetch('https://api.github.com/graphql', {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${ghToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      query: `query($owner: String!) { ${ownerType}(login: $owner) { projectsV2(first: 50) { nodes { number title } } } }`,
+                      variables: { owner: ghOwner }
+                    })
+                  });
+                  if (res.ok) {
+                    const data = await res.json() as any;
+                    const nodes = data?.data?.[ownerType]?.projectsV2?.nodes ?? [];
+                    if (nodes.length) { projects = nodes; break; }
+                  }
+                } catch { /* try next */ }
+              }
+              panel.webview.postMessage({ type: 'githubProjects', projects });
+            } catch (err) {
+              panel.webview.postMessage({ type: 'githubProjectsError', error: err instanceof Error ? err.message : String(err) });
             }
             break;
           }
@@ -397,6 +469,7 @@ function getBody(): string {
     '<div class="tabs">',
     '  <button class="tab" id="tab-jira">Jira</button>',
     '  <button class="tab" id="tab-ado">Azure DevOps</button>',
+    '  <button class="tab" id="tab-github">GitHub</button>',
     '</div>',
     '',
     '<div class="section" id="section-jira">',
@@ -410,8 +483,8 @@ function getBody(): string {
     '  <div class="field"><label>Default Project</label><button class="btn btn-secondary" id="jira-fetch-btn">Load projects</button><div class="project-status" id="jira-project-status"></div><div id="jira-project-search-row" style="display:none;margin-top:8px"><input type="text" id="jira-project-search" placeholder="Search by key or name..." autocomplete="off" spellcheck="false"/></div><input type="hidden" id="jira-project" value=""><div id="jira-project-list" style="display:none;margin-top:6px;max-height:200px;overflow-y:auto;border:1px solid var(--vscode-input-border);border-radius:3px;background:var(--vscode-input-background)"></div><div class="hint" id="jira-project-count" style="display:none"></div></div>',
     '  <div id="jira-fields-section" style="display:none;margin-top:16px">',
     '    <label style="display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--vscode-descriptionForeground);margin-bottom:8px">Required Field Defaults</label>',
-    '    <div class="hint" style="margin-bottom:8px">Set default values for required fields. These will auto-fill when creating tickets.</div>',
-    '    <div id="jira-fields-loading" style="display:none"><span class="spinner"></span> Loading fields...</div>',
+    '    <div class="hint" style="margin-bottom:8px">Your board has required fields with fixed options. Set defaults here so tickets create without errors. Fields that depend on context (text, dates) are handled during ticket creation.</div>',
+    '    <div id="jira-fields-loading" style="display:none"><span class="spinner"></span> Scanning create screens...</div>',
     '    <div id="jira-fields-container"></div>',
     '    <div class="project-status" id="jira-fields-status"></div>',
     '  </div>',
@@ -425,6 +498,18 @@ function getBody(): string {
     '  <div class="field"><label>Organisation URL</label><input type="url" id="ado-org" placeholder="https://dev.azure.com/yourorg" autocomplete="off" spellcheck="false"/><div class="hint">The root URL of your Azure DevOps organisation</div></div>',
     '  <div class="field"><label>Personal Access Token (PAT)</label><div class="input-row"><input type="password" id="ado-token" placeholder="Paste PAT here" autocomplete="new-password"/><button class="btn btn-outline" id="ado-pat-btn">Generate PAT</button><button class="btn btn-secondary" id="ado-validate-btn" style="margin-left:4px">Validate</button></div><div id="ado-token-status" style="font-size:11px;margin-top:4px;min-height:16px"></div><div class="hint">Switch to your browser, create the PAT, paste it here.</div></div>',
     '  <div class="field"><label>Project</label><button class="btn btn-secondary" id="ado-fetch-btn">Load projects</button><div class="project-status" id="ado-project-status"></div><select id="ado-project" style="display:none"><option value="">— Select a project —</option></select></div>',
+    '</div>',
+    '',
+    '<div class="section" id="section-github">',
+    '  <div class="info-box">',
+    '    <strong>Required:</strong> Owner (org or user) &middot; Repository &middot; Personal Access Token<br>',
+    '    Create a PAT at <a href="#" id="gh-token-link">github.com/settings/tokens</a> with <strong>repo</strong> and <strong>project</strong> scopes.',
+    '  </div>',
+    '  <div class="field"><label>Owner</label><input type="text" id="gh-owner" placeholder="your-org or your-username" autocomplete="off" spellcheck="false"/><div class="hint">GitHub organisation or personal account</div></div>',
+    '  <div class="field"><label>Repository</label><input type="text" id="gh-repo" placeholder="my-repo" autocomplete="off" spellcheck="false"/><div class="hint">Repository where issues are created</div></div>',
+    '  <div class="field"><label>Personal Access Token</label><div class="input-row"><input type="password" id="gh-token" placeholder="ghp_xxxxxxxxxxxx" autocomplete="new-password"/><button class="btn btn-outline" id="gh-gen-btn">Generate token</button><button class="btn btn-secondary" id="gh-validate-btn" style="margin-left:4px">Validate</button></div><div id="github-token-status" style="font-size:11px;margin-top:4px;min-height:16px"></div><div class="hint">Needs repo + project scopes. Classic or fine-grained PAT.</div></div>',
+    '  <div class="field"><label>Project Number (optional)</label><input type="number" id="gh-project-num" placeholder="e.g. 1" autocomplete="off"/><div class="hint">GitHub Projects v2 number. Find it in your project URL: github.com/orgs/ORG/projects/<strong>NUMBER</strong></div></div>',
+    '  <div class="field"><button class="btn btn-secondary" id="gh-fetch-btn">Load Projects</button><div class="project-status" id="github-project-status"></div><div id="gh-project-list" style="display:none;margin-top:6px;max-height:200px;overflow-y:auto;border:1px solid var(--vscode-input-border);border-radius:3px;background:var(--vscode-input-background)"></div></div>',
     '</div>',
     '',
     '<hr>',
@@ -444,6 +529,7 @@ function getScript(safeJson: string): string {
     '// ── Init ──',
     'document.getElementById("tab-jira").addEventListener("click", function(){ switchTab("jira"); });',
     'document.getElementById("tab-ado").addEventListener("click", function(){ switchTab("ado"); });',
+    'document.getElementById("tab-github").addEventListener("click", function(){ switchTab("github"); });',
     'document.getElementById("jira-token-link").addEventListener("click", function(e){ e.preventDefault(); openUrl("jiraTokenPage"); });',
     'document.getElementById("jira-gen-btn").addEventListener("click", function(){ openUrl("jiraTokenPage"); });',
     'document.getElementById("jira-fetch-btn").addEventListener("click", function(){ fetchJiraProjects(); });',
@@ -454,6 +540,10 @@ function getScript(safeJson: string): string {
     'document.getElementById("done-btn").addEventListener("click", function(){ vscode.postMessage({type:"done",lastSaved:_lastSaved}); });',
     'document.getElementById("jira-validate-btn").addEventListener("click", function(){ validateToken("jira"); });',
     'document.getElementById("ado-validate-btn").addEventListener("click", function(){ validateToken("ado"); });',
+    'document.getElementById("gh-gen-btn").addEventListener("click", function(){ vscode.postMessage({type:"openUrl",url:"githubTokenPage"}); });',
+    'document.getElementById("gh-token-link").addEventListener("click", function(e){ e.preventDefault(); vscode.postMessage({type:"openUrl",url:"githubTokenPage"}); });',
+    'document.getElementById("gh-validate-btn").addEventListener("click", function(){ validateToken("github"); });',
+    'document.getElementById("gh-fetch-btn").addEventListener("click", function(){ fetchGithubProjects(); });',
     '',
     '// Clear on input change',
     'document.getElementById("jira-url").addEventListener("input", function(){ clearJiraProjects(); });',
@@ -468,7 +558,11 @@ function getScript(safeJson: string): string {
     'if(pre.adoOrgUrl) document.getElementById("ado-org").value = pre.adoOrgUrl;',
     'if(pre._hasJiraToken){ var jt=document.getElementById("jira-token"); jt.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; jt.dataset.hasStored="1"; jt.addEventListener("input",function(){ jt.dataset.hasStored="0"; }); }',
     'if(pre._hasAdoToken){ var at=document.getElementById("ado-token"); at.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; at.dataset.hasStored="1"; at.addEventListener("input",function(){ at.dataset.hasStored="0"; }); }',
-    'switchTab(pre.platform === "azuredevops" ? "ado" : "jira");',
+    'if(pre.githubOwner) document.getElementById("gh-owner").value = pre.githubOwner;',
+    'if(pre.githubRepo) document.getElementById("gh-repo").value = pre.githubRepo;',
+    'if(pre.githubProjectNumber) document.getElementById("gh-project-num").value = pre.githubProjectNumber;',
+    'if(pre._hasGithubToken){ var gt=document.getElementById("gh-token"); gt.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; gt.dataset.hasStored="1"; gt.addEventListener("input",function(){ gt.dataset.hasStored="0"; }); }',
+    'switchTab(pre.platform === "azuredevops" ? "ado" : pre.platform === "github" ? "github" : "jira");',
     '',
     '// Auto-fetch projects using stored tokens (tokens stay in extension host)',
     'if(pre._hasJiraToken && pre.jiraBaseUrl && pre.jiraEmail){ setStatus("jira","","Loading projects..."); document.getElementById("jira-fetch-btn").disabled=true; vscode.postMessage({type:"requestAutoFetch",platform:"jira"}); }',
@@ -478,7 +572,7 @@ function getScript(safeJson: string): string {
     '',
     '// ── Functions ──',
     'function switchTab(tab){ document.querySelectorAll(".tab").forEach(function(t){t.classList.remove("active")}); document.querySelectorAll(".section").forEach(function(s){s.classList.remove("visible")}); document.getElementById("tab-"+tab).classList.add("active"); document.getElementById("section-"+tab).classList.add("visible"); }',
-    'function activeTab(){ return document.getElementById("tab-ado").classList.contains("active") ? "ado" : "jira"; }',
+    'function activeTab(){ if(document.getElementById("tab-ado").classList.contains("active")) return "ado"; if(document.getElementById("tab-github").classList.contains("active")) return "github"; return "jira"; }',
     'function openUrl(key){ vscode.postMessage({type:"openUrl",url:key}); }',
     'function openAdoTokenPage(){ var orgUrl=document.getElementById("ado-org").value.trim(); var orgName=orgUrl?orgUrl.replace(/\\/$/, "").split("/").pop():null; var url=orgName?"https://dev.azure.com/"+orgName+"/_usersSettings/tokens":"https://dev.azure.com/_usersSettings/tokens"; vscode.postMessage({type:"openUrl",url:url}); }',
     'function setStatus(platform,cls,html){ var el=document.getElementById(platform+"-project-status")||document.getElementById(platform+"-status"); if(!el)return; el.className="project-status"+(cls?" "+cls:""); el.innerHTML=html; }',
@@ -553,60 +647,60 @@ function getScript(safeJson: string): string {
     '  loading.style.display = "none";',
     '  container.innerHTML = "";',
     '  var hasFields = false;',
+    '  var totalDefaults = 0;',
     '  types.forEach(function(typeName){',
     '    var fields = fieldsByType[typeName];',
     '    if(!fields || !fields.length) return;',
+    '    // Only show required fields with fixed options — those need defaults',
+    '    var defaultable = fields.filter(function(f){ return f.required && f.allowedValues && f.allowedValues.length; });',
+    '    if(!defaultable.length) return;',
     '    hasFields = true;',
+    '    totalDefaults += defaultable.length;',
     '    var group = document.createElement("div");',
-    '    group.style.cssText = "margin-bottom:12px;border:1px solid var(--vscode-panel-border,#3c3c3c);border-radius:4px;padding:10px;";',
+    '    group.style.cssText = "margin-bottom:10px;border:1px solid var(--vscode-panel-border,#3c3c3c);border-radius:4px;padding:10px;";',
     '    var title = document.createElement("div");',
     '    title.style.cssText = "font-weight:600;font-size:12px;margin-bottom:8px;";',
-    '    title.textContent = typeName;',
+    '    title.textContent = typeName + " (" + defaultable.length + " required)";',
     '    group.appendChild(title);',
-    '    fields.forEach(function(f){',
+    '    defaultable.forEach(function(f){',
     '      var row = document.createElement("div");',
     '      row.style.cssText = "margin-bottom:6px;";',
     '      var lbl = document.createElement("label");',
     '      lbl.style.cssText = "display:block;font-size:11px;color:var(--vscode-descriptionForeground);margin-bottom:2px;";',
-    '      lbl.textContent = f.name + (f.required ? " *" : "");',
+    '      lbl.textContent = f.name + " *";',
     '      row.appendChild(lbl);',
     '      var saved = (_jiraFieldDefaults[typeName] && _jiraFieldDefaults[typeName][f.key]) || "";',
-    '      if(f.allowedValues && f.allowedValues.length){',
-    '        var sel = document.createElement("select");',
-    '        sel.setAttribute("data-type", typeName);',
-    '        sel.setAttribute("data-field", f.key);',
-    '        sel.setAttribute("data-ftype", f.type);',
-    '        sel.style.cssText = "width:100%;padding:4px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:12px;";',
-    '        var empty = document.createElement("option");',
-    '        empty.value = ""; empty.textContent = "-- select --";',
-    '        sel.appendChild(empty);',
-    '        f.allowedValues.forEach(function(av){',
-    '          var opt = document.createElement("option");',
-    '          opt.value = JSON.stringify({id:av.id, value:av.value});',
-    '          opt.textContent = av.value;',
-    '          if(saved && (JSON.stringify({id:av.id,value:av.value}) === JSON.stringify(saved))) opt.selected = true;',
-    '          sel.appendChild(opt);',
-    '        });',
-    '        row.appendChild(sel);',
-    '      } else {',
-    '        var inp = document.createElement("input");',
-    '        inp.type = f.type === "number" ? "number" : "text";',
-    '        inp.setAttribute("data-type", typeName);',
-    '        inp.setAttribute("data-field", f.key);',
-    '        inp.setAttribute("data-ftype", f.type);',
-    '        inp.placeholder = f.type === "date" ? "YYYY-MM-DD" : "";',
-    '        inp.style.cssText = "width:100%;padding:4px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:12px;";',
-    '        if(saved) inp.value = typeof saved === "string" ? saved : JSON.stringify(saved);',
-    '        row.appendChild(inp);',
-    '      }',
+    '      var sel = document.createElement("select");',
+    '      sel.setAttribute("data-type", typeName);',
+    '      sel.setAttribute("data-field", f.key);',
+    '      sel.setAttribute("data-ftype", f.type);',
+    '      sel.style.cssText = "width:100%;padding:4px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:12px;";',
+    '      var empty = document.createElement("option");',
+    '      empty.value = ""; empty.textContent = "-- select default --";',
+    '      sel.appendChild(empty);',
+    '      f.allowedValues.forEach(function(av){',
+    '        var opt = document.createElement("option");',
+    '        opt.value = JSON.stringify({id:av.id, value:av.value});',
+    '        opt.textContent = av.value;',
+    '        if(saved && (JSON.stringify({id:av.id,value:av.value}) === JSON.stringify(saved))) opt.selected = true;',
+    '        sel.appendChild(opt);',
+    '      });',
+    '      row.appendChild(sel);',
     '      group.appendChild(row);',
     '    });',
     '    container.appendChild(group);',
     '  });',
     '  if(!hasFields){',
-    '    container.innerHTML = "<div style=\\"font-size:11px;color:var(--vscode-descriptionForeground);padding:6px\\">No additional required fields found for this project.</div>";',
+    '    var msg = "No required dropdown fields found \\u2014 your board\\u0027s required fields will be handled during ticket creation";',
+    '    var allReq = 0;',
+    '    types.forEach(function(t){ var ff=fieldsByType[t]; if(ff) allReq += ff.filter(function(f){return f.required;}).length; });',
+    '    if(allReq > 0) msg += " (" + allReq + " required field" + (allReq!==1?"s":"") + " will be prompted).";',
+    '    else msg += ".";',
+    '    container.innerHTML = "<div style=\\"font-size:11px;color:var(--vscode-descriptionForeground);padding:6px\\">" + msg + "</div>";',
+    '    setStatus("jira-fields","ok","No defaults needed \\u2014 all fields handled at create time.");',
+    '  } else {',
+    '    setStatus("jira-fields","ok",totalDefaults + " required field" + (totalDefaults!==1?"s":"") + " need defaults. Set them above, then Save.");',
     '  }',
-    '  setStatus("jira-fields","ok","Fields loaded. Set defaults for required fields.");',
     '}',
     '',
     'function collectJiraFieldDefaults(){',
@@ -641,6 +735,23 @@ function getScript(safeJson: string): string {
     '  if(msg.type==="jiraProjectsError"){ setStatus("jira","error","Could not load projects: "+msg.error); document.getElementById("jira-fetch-btn").disabled=false; }',
     '  if(msg.type==="jiraFields"){ renderJiraFields(msg.fieldsByType, msg.types); }',
     '  if(msg.type==="jiraFieldsError"){ document.getElementById("jira-fields-loading").style.display="none"; setStatus("jira-fields","error","Could not load fields: "+msg.error); }',
+    '  if(msg.type==="githubProjects"){',
+    '    var list=document.getElementById("gh-project-list"); list.innerHTML=""; list.style.display="block";',
+    '    if(!msg.projects||!msg.projects.length){ setStatus("github","","No projects found. You can enter the project number manually."); list.style.display="none"; }',
+    '    else{',
+    '      msg.projects.forEach(function(p){',
+    '        var row=document.createElement("div");',
+    '        row.style.cssText="padding:6px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--vscode-panel-border,#333)";',
+    '        row.textContent="#"+p.number+" "+p.title;',
+    '        row.addEventListener("click",function(){ document.getElementById("gh-project-num").value=p.number; list.style.display="none"; setStatus("github","ok","Project #"+p.number+" selected."); });',
+    '        row.addEventListener("mouseenter",function(){row.style.background="var(--vscode-list-hoverBackground)";});',
+    '        row.addEventListener("mouseleave",function(){row.style.background="";});',
+    '        list.appendChild(row);',
+    '      });',
+    '      setStatus("github","ok",msg.projects.length+" project"+(msg.projects.length!==1?"s":"")+" found. Click to select.");',
+    '    }',
+    '  }',
+    '  if(msg.type==="githubProjectsError"){ setStatus("github","error","Could not load projects: "+msg.error); }',
     '  if(msg.type==="saveSuccess"){ setStatus(msg.platform,"ok","Saved successfully. You can switch tabs to configure the other platform."); document.getElementById("save-btn").textContent="Save and Connect"; _lastSaved=msg.platform; }',
     '  if(msg.type==="saveError"){ setStatus(activeTab(),"error","Save failed: "+msg.error); }',
     '  if(msg.type==="tokenStatus"){',
@@ -662,6 +773,11 @@ function getScript(safeJson: string): string {
     '    var jtEl=document.getElementById("jira-token");',
     '    if(jtEl.dataset.hasStored==="1"){ vscode.postMessage({type:"validateToken",platform:"jira",baseUrl:baseUrl,email:email,useStored:true}); }',
     '    else{ var token=jtEl.value.trim(); if(baseUrl&&email&&token){ vscode.postMessage({type:"validateToken",platform:"jira",baseUrl:baseUrl,email:email,token:token}); } }',
+    '  } else if(platform==="github"){',
+    '    var owner=document.getElementById("gh-owner").value.trim();',
+    '    var gtEl=document.getElementById("gh-token");',
+    '    if(gtEl.dataset.hasStored==="1"){ vscode.postMessage({type:"validateToken",platform:"github",owner:owner,useStored:true}); }',
+    '    else{ var tk=gtEl.value.trim(); if(owner&&tk){ vscode.postMessage({type:"validateToken",platform:"github",owner:owner,token:tk}); } }',
     '  } else {',
     '    var orgUrl=document.getElementById("ado-org").value.trim();',
     '    var atEl=document.getElementById("ado-token");',
@@ -670,9 +786,20 @@ function getScript(safeJson: string): string {
     '  }',
     '}',
     '',
+    'function fetchGithubProjects(){',
+    '  var owner=document.getElementById("gh-owner").value.trim();',
+    '  var gtEl=document.getElementById("gh-token");',
+    '  var token=gtEl.dataset.hasStored==="1"?"":gtEl.value.trim();',
+    '  if(!owner){setStatus("github","error","Enter the owner first.");return;}',
+    '  if(!token&&gtEl.dataset.hasStored!=="1"){setStatus("github","error","Enter your PAT first.");return;}',
+    '  setStatus("github","","Loading projects...");',
+    '  vscode.postMessage({type:"fetchGithubProjects",owner:owner,token:token,useStored:gtEl.dataset.hasStored==="1"});',
+    '}',
+    '',
     '// Auto-validate stored tokens on load',
     'if(pre._hasJiraToken && pre.jiraBaseUrl && pre.jiraEmail){ validateToken("jira"); }',
     'if(pre._hasAdoToken && pre.adoOrgUrl){ validateToken("ado"); }',
+    'if(pre._hasGithubToken && pre.githubOwner){ validateToken("github"); }',
     '',
     'function save(){',
     '  var tab=activeTab();',
@@ -686,6 +813,16 @@ function getScript(safeJson: string): string {
     '    if(!email){alert("Enter your Jira account email.");return;}',
     '    if(!token&&jtEl.dataset.hasStored!=="1"){alert("Enter your Jira API token.");return;}',
     '    vscode.postMessage({type:"save",data:{platform:"jira",jiraBaseUrl:baseUrl,jiraEmail:email,jiraToken:token,jiraProject:project,jiraFieldDefaults:collectJiraFieldDefaults()}});',
+    '  } else if(tab==="github"){',
+    '    var ghOwner=document.getElementById("gh-owner").value.trim();',
+    '    var ghRepo=document.getElementById("gh-repo").value.trim();',
+    '    var gtEl=document.getElementById("gh-token");',
+    '    var ghToken=gtEl.dataset.hasStored==="1"?"":gtEl.value.trim();',
+    '    var ghProjNum=document.getElementById("gh-project-num").value.trim();',
+    '    if(!ghOwner){alert("Enter the GitHub owner.");return;}',
+    '    if(!ghRepo){alert("Enter the repository name.");return;}',
+    '    if(!ghToken&&gtEl.dataset.hasStored!=="1"){alert("Enter your GitHub PAT.");return;}',
+    '    vscode.postMessage({type:"save",data:{platform:"github",githubOwner:ghOwner,githubRepo:ghRepo,githubToken:ghToken,githubProjectNumber:ghProjNum?Number(ghProjNum):undefined}});',
     '  } else {',
     '    var orgUrl=document.getElementById("ado-org").value.trim();',
     '    var atEl=document.getElementById("ado-token");',

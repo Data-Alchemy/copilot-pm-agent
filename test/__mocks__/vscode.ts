@@ -68,6 +68,12 @@ export const window = {
   showQuickPick: jest.fn(() => Promise.resolve()),
   showInputBox: jest.fn(() => Promise.resolve()),
   activeTextEditor: undefined,
+  createOutputChannel: jest.fn(() => ({
+    clear: jest.fn(),
+    appendLine: jest.fn(),
+    show: jest.fn(),
+    dispose: jest.fn(),
+  })),
 };
 
 export const workspace = {

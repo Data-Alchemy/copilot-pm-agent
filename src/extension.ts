@@ -108,28 +108,41 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       } catch { /* WebView not available */ }
     }),
+  );
 
-    reg('pm-agent.list',     () => runner.list()),
-    reg('pm-agent.open',     () => runner.open()),
+  // Helper: display markdown in an output channel (for command palette calls)
+  const pmChannel = vscode.window.createOutputChannel('PM Agent');
+  const showInChat = (md: string) => {
+    pmChannel.clear();
+    pmChannel.appendLine(md.replace(/\*\*/g, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/`/g, ''));
+    pmChannel.show(true);
+  };
+
+  context.subscriptions.push(
+    reg('pm-agent.list', async () => {
+      const result = await runner.list();
+      showInChat(result);
+    }),
+    reg('pm-agent.open', async () => {
+      const result = await runner.open();
+      showInChat(result);
+    }),
     reg('pm-agent.comment',  () => runner.comment()),
     reg('pm-agent.status',   () => runner.status()),
     reg('pm-agent.assign',   () => runner.assign()),
     reg('pm-agent.estimate', () => runner.estimate()),
     reg('pm-agent.move',     () => runner.move()),
-    reg('pm-agent.sprint',   () => runner.sprint()),
+    reg('pm-agent.sprint', async () => {
+      const result = await runner.sprint();
+      showInChat(result);
+    }),
     reg('pm-agent.debug',    () => runner.debug()),
     reg('pm-agent.create',   () => runner.create()),
     reg('pm-agent.parent',   () => runner.parent()),
     reg('pm-agent.migrate', async () => {
       await runner.migrate();
       const result = runner.lastMigrateResult;
-      if (result) {
-        const ch = vscode.window.createOutputChannel('PM Agent — Migration');
-        ch.clear();
-        // Strip markdown formatting for the output channel
-        ch.appendLine(result.replace(/\*\*/g, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'));
-        ch.show(true);
-      }
+      if (result) { showInChat(result); }
     }),
 
     reg('pm-agent.openChat', async () => {

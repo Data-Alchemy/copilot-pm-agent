@@ -106,57 +106,24 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
       switch (intent.kind) {
         case 'list': {
-          const du = await this.credMgr.getDefaultUser();
-          const items = await provider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 30 });
-          if (!items.length) { this._send('bot', 'No work items found.'); break; }
-          const lines = items.slice(0, 20).map(wi =>
-            `- **[${wi.key}](${wi.url})** ${wi.title} \`${wi.status}\``
-          ).join('\n');
-          this._send('bot', `**${items.length} items:**\n\n${lines}`);
+          this._sendTyping(false);
+          const result = await this.runner.list();
+          this._send('bot', result);
           break;
         }
 
         case 'open': {
           if (!intent.workItemKey) { this._send('bot', 'Usage: `/open #1234` or `/open ENG-42`'); break; }
-          const item = await provider.getWorkItem(intent.workItemKey);
-          this.context.globalState.update('lastItem', item);
-          const pts = item.storyPoints ?? item.effort;
-          const lines = [
-            `## [${item.key}](${item.url}) ${item.title}`,
-            `**Type:** ${item.type}   **Status:** \`${item.status}\``,
-            item.assignee ? `**Assignee:** ${item.assignee.displayName}` : '',
-            pts ? `**Points:** ${pts}` : '',
-            item.sprint ? `**Sprint:** ${item.sprint.split('\\').pop()}` : '',
-            item.description ? `\n${stripHtml(item.description).slice(0, 300)}` : ''
-          ].filter(Boolean).join('\n');
-          this._send('bot', lines, [
-            { label: 'Comment',  cmd: `/comment ${item.key}` },
-            { label: 'Status',   cmd: `/status ${item.key}` },
-            { label: 'Assign',   cmd: `/assign ${item.key}` },
-          ]);
+          this._sendTyping(false);
+          const result = await this.runner.open(intent.workItemKey);
+          this._send('bot', result);
           break;
         }
 
         case 'sprint': {
-          const sprints = await (provider as any).getAllSprints?.() ?? [];
-          const active = sprints.find((s: any) => s.state === 'active');
-          if (!active) { this._send('bot', 'No active sprint found.'); break; }
-          const du2 = await this.credMgr.getDefaultUser();
-          const sitems = await provider.searchWorkItems({
-            assigneeId: du2?.id ?? '@me',
-            sprintId: (creds.platform === 'azuredevops' ? (active as any).iterationPath : active.id),
-            maxResults: 30
-          }).catch(() => []);
-          const lines2 = [
-            `## Sprint: ${active.name}`,
-            active.endDate ? `**Ends:** ${active.endDate.slice(0,10)}` : '',
-            `**Your items:** ${sitems.length}`,
-            '',
-            ...sitems.slice(0, 15).map((wi: any) =>
-              `- **[${wi.key}](${wi.url})** ${wi.title} \`${wi.status}\``
-            )
-          ].filter(s => s !== undefined).join('\n');
-          this._send('bot', lines2);
+          this._sendTyping(false);
+          const result = await this.runner.sprint();
+          this._send('bot', result);
           break;
         }
 

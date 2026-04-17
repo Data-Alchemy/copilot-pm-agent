@@ -153,15 +153,9 @@ export class ChatPanel {
       switch (intent.kind) {
 
         case 'list': {
-          const du = await this.credMgr.getDefaultUser();
-          const items = await provider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 30 });
-          if (!items.length) {
-            this.send('bot', 'No work items found. Try `@pm /setuser` to set your default user.'); break;
-          }
-          const lines = items.slice(0, 20).map(wi =>
-            `- **[${wi.key}](${wi.url})** ${wi.title} \`${wi.status}\``
-          ).join('\n');
-          this.send('bot', `**${items.length} items assigned to you:**\n\n${lines}`);
+          this.sendTyping(false);
+          const result = await this.runner.list();
+          this.send('bot', result);
           break;
         }
 
@@ -169,45 +163,16 @@ export class ChatPanel {
           if (!intent.workItemKey) {
             this.send('bot', 'Enter a key to open, e.g. `/open #1234` or `/open ENG-42`'); break;
           }
-          const item = await provider.getWorkItem(intent.workItemKey);
-          this.ctx.globalState.update('lastItem', item);
-          const pts   = item.storyPoints ?? item.effort;
-          const lines = [
-            `## [${item.key}](${item.url}) ${item.title}`,
-            `**Type:** ${item.type}   **Status:** \`${item.status}\``,
-            item.assignee  ? `**Assignee:** ${item.assignee.displayName}` : '',
-            pts            ? `**Points:** ${pts}` : '',
-            item.sprint    ? `**Sprint:** ${item.sprint.split('\\').pop()}` : '',
-            item.description ? `\n${stripHtml(item.description).slice(0, 400)}` : ''
-          ].filter(Boolean).join('\n');
-          this.send('bot', lines, [
-            { label: 'Comment',  cmd: `/comment ${item.key}` },
-            { label: 'Status',   cmd: `/status ${item.key}` },
-            { label: 'Assign',   cmd: `/assign ${item.key}` },
-          ]);
+          this.sendTyping(false);
+          const result = await this.runner.open(intent.workItemKey);
+          this.send('bot', result);
           break;
         }
 
         case 'sprint': {
-          const sprints = await (provider as any).getAllSprints?.() ?? [];
-          const active  = sprints.find((s: any) => s.state === 'active');
-          if (!active) { this.send('bot', 'No active sprint found.'); break; }
-          const du2   = await this.credMgr.getDefaultUser();
-          const sitems = await provider.searchWorkItems({
-            assigneeId: du2?.id ?? '@me',
-            sprintId:   (creds.platform === 'azuredevops' ? (active as any).iterationPath : active.id),
-            maxResults: 30
-          }).catch(() => []);
-          const lines2 = [
-            `## Sprint: ${active.name}`,
-            active.endDate ? `**Ends:** ${active.endDate.slice(0,10)}` : '',
-            `**Your items:** ${sitems.length}`,
-            '',
-            ...sitems.slice(0, 15).map((wi: any) =>
-              `• **[${wi.key}](${wi.url})** ${wi.title} \`${wi.status}\``
-            )
-          ].filter(s => s !== undefined).join('\n');
-          this.send('bot', lines2);
+          this.sendTyping(false);
+          const result = await this.runner.sprint();
+          this.send('bot', result);
           break;
         }
 

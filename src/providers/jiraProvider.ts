@@ -724,16 +724,14 @@ export class JiraProvider {
     allowedValues?: Array<{ id: string; value: string }>;
   }>> {
     const project = this.defaultProject;
-    // Fields already handled by our standard create flow
+    // Fields already handled by our standard create flow — don't show in the wizard
     const skip = new Set([
       'summary', 'issuetype', 'project', 'description', 'priority',
       'labels', 'parent', 'assignee', 'reporter', 'attachment',
-      'customfield_10016', 'customfield_10028', 'customfield_10014', 'story_points',
       'customfield_10020', // sprint
     ]);
 
     try {
-      // Resolve issue type name → id
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const allTypes = await this.http<any[]>('/issuetype');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -743,23 +741,33 @@ export class JiraProvider {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let fieldEntries: Array<{ key: string; field: any }> = [];
 
-      // Try new createmeta endpoint (Jira Cloud)
+      // Method 1: New createmeta v3 endpoint (Jira Cloud)
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const meta = await this.http<any>(
-          `/issue/createmeta/${encodeURIComponent(project)}/issuetypes/${typeObj.id}`
-        );
-        const vals = meta?.values ?? [];
-        fieldEntries = vals.map((v: any) => ({ key: v.fieldId ?? '', field: v }));
+        let allValues: any[] = [];
+        let startAt = 0;
+        const maxResults = 50;
+        let total = Infinity;
+        while (startAt < total) {
+          const meta = await this.http<any>(
+            `/issue/createmeta/${encodeURIComponent(project)}/issuetypes/${typeObj.id}?startAt=${startAt}&maxResults=${maxResults}`
+          );
+          const vals = meta?.values ?? [];
+          allValues = allValues.concat(vals);
+          total = meta?.total ?? vals.length;
+          startAt += vals.length;
+          if (vals.length === 0 || startAt >= 500) { break; }
+        }
+        fieldEntries = allValues.map((v: any) => ({ key: v.fieldId ?? '', field: v }));
       } catch {
-        // Fallback: old createmeta with expand (Jira Server / older Cloud)
+        // Method 2: Old createmeta with expand (Jira Server / older Cloud)
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const meta = await this.http<any>(
             `/issue/createmeta?projectKeys=${encodeURIComponent(project)}&issuetypeIds=${typeObj.id}&expand=projects.issuetypes.fields`
           );
           const fields = meta?.projects?.[0]?.issuetypes?.[0]?.fields ?? {};
-          fieldEntries = Object.entries(fields).map(([k, v]: [string, any]) => ({ key: k, field: v }));
+          fieldEntries = Object.entries(fields).map(([k, v]: [string, any]) => ({ key: k, field: { ...v, fieldId: k } }));
         } catch { return []; }
       }
 
@@ -773,13 +781,17 @@ export class JiraProvider {
         if (!key || skip.has(key)) { continue; }
 
         const schema = field.schema ?? {};
+        const schemaType = schema.type ?? '';
+        const customType = schema.custom ?? '';
+
         let type: 'string' | 'number' | 'option' | 'array' | 'user' | 'date' | 'any' = 'string';
-        if (schema.type === 'number')   { type = 'number'; }
-        else if (schema.type === 'option' || schema.custom?.includes('select') || field.allowedValues?.length) { type = 'option'; }
-        else if (schema.type === 'array' && schema.items === 'option') { type = 'array'; }
-        else if (schema.type === 'array') { type = 'array'; }
-        else if (schema.type === 'user')  { type = 'user'; }
-        else if (schema.type === 'date' || schema.type === 'datetime') { type = 'date'; }
+        if (schemaType === 'number') { type = 'number'; }
+        else if (schemaType === 'option' || customType.includes('select') || customType.includes('radiobuttons') || field.allowedValues?.length) { type = 'option'; }
+        else if (schemaType === 'array' && (schema.items === 'option' || schema.items === 'string')) { type = 'array'; }
+        else if (schemaType === 'array') { type = 'array'; }
+        else if (schemaType === 'user') { type = 'user'; }
+        else if (schemaType === 'date' || schemaType === 'datetime') { type = 'date'; }
+        else if (schemaType === 'any' || schemaType === 'json') { type = 'any'; }
 
         let allowedValues: Array<{ id: string; value: string }> | undefined;
         if (field.allowedValues?.length) {

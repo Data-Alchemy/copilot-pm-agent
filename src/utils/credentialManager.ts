@@ -9,6 +9,7 @@ import { AiConfig, AiProvider } from './aiHelper';
 
 const JIRA_TOKEN_KEY = 'pmAgent.jira.apiToken';
 const ADO_TOKEN_KEY = 'pmAgent.ado.personalAccessToken';
+const GITHUB_TOKEN_KEY = 'pmAgent.github.personalAccessToken';
 const AI_KEY_SECRET = 'pmAgent.ai.apiKey';
 
 export class CredentialManager {
@@ -18,13 +19,14 @@ export class CredentialManager {
  private readonly context: vscode.ExtensionContext
  ) {}
 
- async getBothCredentials(): Promise<{ jira?: ApiCredentials; ado?: ApiCredentials }> {
+ async getBothCredentials(): Promise<{ jira?: ApiCredentials; ado?: ApiCredentials; github?: ApiCredentials }> {
  const config = vscode.workspace.getConfiguration('pmAgent');
- const [jiraToken, adoToken] = await Promise.all([
+ const [jiraToken, adoToken, githubToken] = await Promise.all([
  this.secrets.get(JIRA_TOKEN_KEY),
- this.secrets.get(ADO_TOKEN_KEY)
+ this.secrets.get(ADO_TOKEN_KEY),
+ this.secrets.get(GITHUB_TOKEN_KEY)
  ]);
- const result: { jira?: ApiCredentials; ado?: ApiCredentials } = {};
+ const result: { jira?: ApiCredentials; ado?: ApiCredentials; github?: ApiCredentials } = {};
  const jiraBase = config.get<string>('jira.baseUrl');
  const jiraEmail = config.get<string>('jira.email');
  if (jiraBase && jiraEmail && jiraToken) {
@@ -35,6 +37,12 @@ export class CredentialManager {
  const adoProj = config.get<string>('azureDevOps.project');
  if (adoOrg && adoProj && adoToken) {
  result.ado = { platform: 'azuredevops', adoOrgUrl: adoOrg, adoProject: adoProj, adoToken };
+ }
+ const ghOwner = config.get<string>('github.owner');
+ const ghRepo = config.get<string>('github.repo');
+ if (ghOwner && ghRepo && githubToken) {
+ result.github = { platform: 'github', githubOwner: ghOwner, githubRepo: ghRepo, githubToken,
+ githubProjectNumber: config.get<number>('github.projectNumber') };
  }
  return result;
  }
@@ -49,6 +57,11 @@ export class CredentialManager {
  creds.jiraEmail = config.get<string>('jira.email');
  creds.jiraProject = config.get<string>('jira.defaultProject');
  creds.jiraToken = await this.secrets.get(JIRA_TOKEN_KEY);
+ } else if (platform === 'github') {
+ creds.githubOwner = config.get<string>('github.owner');
+ creds.githubRepo = config.get<string>('github.repo');
+ creds.githubToken = await this.secrets.get(GITHUB_TOKEN_KEY);
+ creds.githubProjectNumber = config.get<number>('github.projectNumber');
  } else {
  creds.adoOrgUrl = config.get<string>('azureDevOps.orgUrl');
  creds.adoProject = config.get<string>('azureDevOps.project');
@@ -64,6 +77,10 @@ export class CredentialManager {
  /** Get stored Jira field defaults (per-issueType) */
  getJiraFieldDefaults(): Record<string, Record<string, unknown>> {
    return this.context.globalState.get<Record<string, Record<string, unknown>>>('pmAgent.jiraFieldDefaults') ?? {};
+ }
+
+ async storeGithubToken(token: string): Promise<void> {
+ await this.secrets.store(GITHUB_TOKEN_KEY, token);
  }
 
  async storeAdoToken(token: string): Promise<void> {
@@ -202,6 +219,9 @@ export class CredentialManager {
  if (creds.platform === 'jira') {
  return !!(creds.jiraBaseUrl && creds.jiraEmail && creds.jiraToken);
  }
+ if (creds.platform === 'github') {
+ return !!(creds.githubOwner && creds.githubRepo && creds.githubToken);
+ }
  return !!(creds.adoOrgUrl && creds.adoProject && creds.adoToken);
  }
 
@@ -209,14 +229,12 @@ export class CredentialManager {
  async runSetupWizard(): Promise<boolean> {
  const config = vscode.workspace.getConfiguration('pmAgent');
 
- // Read existing tokens from secret store so the wizard can show
- // the •••••••• sentinel and preserve them on save
- const [storedJiraToken, storedAdoToken] = await Promise.all([
+ const [storedJiraToken, storedAdoToken, storedGithubToken] = await Promise.all([
    this.secrets.get(JIRA_TOKEN_KEY),
-   this.secrets.get(ADO_TOKEN_KEY)
+   this.secrets.get(ADO_TOKEN_KEY),
+   this.secrets.get(GITHUB_TOKEN_KEY)
  ]);
 
- // Pre-fill whatever is already saved so the user doesn't retype it
  const existing: Record<string, any> = {
    platform: config.get<Platform>('platform', 'jira'),
    jiraBaseUrl: config.get<string>('jira.baseUrl') || '',
@@ -224,6 +242,9 @@ export class CredentialManager {
    jiraProject: config.get<string>('jira.defaultProject') || '',
    adoOrgUrl: config.get<string>('azureDevOps.orgUrl') || '',
    adoProject: config.get<string>('azureDevOps.project') || '',
+   githubOwner: config.get<string>('github.owner') || '',
+   githubRepo: config.get<string>('github.repo') || '',
+   githubProjectNumber: config.get<number>('github.projectNumber') || '',
    jiraFieldDefaults: this.getJiraFieldDefaults(),
  };
 
@@ -231,6 +252,7 @@ export class CredentialManager {
  // but NEVER pass the actual token values into the webview HTML.
  if (storedJiraToken) { existing._hasJiraToken = true; }
  if (storedAdoToken)  { existing._hasAdoToken  = true; }
+ if (storedGithubToken) { existing._hasGithubToken = true; }
 
  const result = await SetupWizardPanel.show(this.context, existing);
  // Save is now handled inside the panel via postMessage.
