@@ -65,6 +65,7 @@ export interface CreateWorkItemInput {
   priority?:    string;
   labels?:      string[];
   sprintId?:    string;
+  parentId?:    string;        // parent work item key or ID
 }
 
 export interface UpdateWorkItemInput {

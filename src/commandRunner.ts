@@ -956,11 +956,26 @@ export class CommandRunner {
     const srcName     = direction === 'jira-to-ado' ? 'Jira'         : 'Azure DevOps';
     const dstName     = direction === 'jira-to-ado' ? 'Azure DevOps' : 'Jira';
 
+    // Select scope — assigned to me or all project items
+    const scopeOpts = [
+      { label: 'My assigned items',    description: 'Items assigned to you',           value: 'mine'  },
+      { label: 'All project items',    description: 'All items in the project (slower)', value: 'all'   },
+    ];
+    const scopePick = await vscode.window.showQuickPick(scopeOpts, {
+      title: `What to load from ${srcName}?`,
+      ignoreFocusOut: true
+    });
+    if (!scopePick) { return; }
+
     // Select source items
     const du = await this.defaultUser();
+    const searchQuery: import('./types').WorkItemQuery = scopePick.value === 'all'
+      ? { maxResults: 200 }
+      : { assigneeId: du?.id ?? '@me', maxResults: 100 };
+
     const srcItems = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Loading ${srcName} items...` },
-      () => srcProvider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 100 })
+      () => srcProvider.searchWorkItems(searchQuery)
     ).then(v => v, () => [] as import('./types').WorkItem[]);
 
     if (!srcItems.length) {
@@ -1256,9 +1271,10 @@ export class CommandRunner {
           priority:           opts.fields.has('priority') ? childFull.priority : undefined,
           labels:             opts.fields.has('labels') && childFull.labels?.length ? childFull.labels : undefined,
           assigneeId:         childAssigneeId,
+          parentId:           opts.parentDstId,
         });
 
-        // Link to parent
+        // Fallback parent link if parentId wasn't set during creation
         await opts.dstProvider.addParentLink?.(
           childDest.key ?? childDest.id,
           opts.parentDstId

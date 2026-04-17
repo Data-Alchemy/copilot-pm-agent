@@ -2011,12 +2011,26 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  const sourceName     = direction === 'jira-to-ado' ? 'Jira'         : 'Azure DevOps';
  const destName       = direction === 'jira-to-ado' ? 'Azure DevOps' : 'Jira';
 
+ // Select scope
+ const scopeOpts = [
+ { label: 'My assigned items', description: 'Items assigned to you', value: 'mine' },
+ { label: 'All project items', description: 'All items in the project', value: 'all' },
+ ];
+ const scopePick = await vscode.window.showQuickPick(scopeOpts, {
+ title: `What to load from ${sourceName}?`, ignoreFocusOut: true
+ });
+ if (!scopePick) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
+
  // Pick source items (multi-select)
  stream.progress(`Loading items from ${sourceName}...`);
  let sourceItems: WorkItem[] = [];
  try {
+ if (scopePick.value === 'all') {
+ sourceItems = await sourceProvider.searchWorkItems({ maxResults: 200 });
+ } else {
  const assigneeId = this.mem.defaultUser?.id ?? '@me';
  sourceItems = await sourceProvider.searchWorkItems({ assigneeId, maxResults: 100 });
+ }
  } catch { /* fall through */ }
 
  if (intent.workItemKey) {
@@ -2291,7 +2305,9 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
          priority: fields.has('priority') ? cf.priority : undefined,
          labels: fields.has('labels') && cf.labels?.length ? cf.labels : undefined,
          assigneeId: cAssigneeId,
+         parentId: parentDstId,
        });
+       // Fallback parent link
        await (destProvider as any).addParentLink?.(cDest.key ?? cDest.id, parentDstId).catch(() => {});
        await destProvider.addComment(cDest.key,
          `Migrated from ${sourceName} â€” original: ${child.url}, parent: ${parentDstKey}`

@@ -189,7 +189,11 @@ export class JiraProvider {
 
     // priority set via post-create update below (may not be on create screen)
     if (input.labels?.length) { fields.labels   = input.labels; }
-    if (input.parentId)       { fields.parent   = { id: input.parentId }; }
+    if (input.parentId) {
+      const pid = input.parentId.trim().replace(/^#/, '');
+      const isNum = /^\d+$/.test(pid);
+      fields.parent = isNum ? { id: pid } : { key: pid };
+    }
 
     if (input.description) {
       fields.description = toAdf(input.description);
@@ -341,23 +345,57 @@ export class JiraProvider {
 
   /** Link a Jira issue to a parent (works for sub-tasks and child issues) */
   async addParentLink(childKey: string, parentKeyOrId: string): Promise<void> {
-    const isNumericId = /^\d+$/.test(parentKeyOrId.trim());
-    const parentRef = isNumericId
-      ? { id: parentKeyOrId.trim() }
-      : { key: parentKeyOrId.trim() };
+    const child = encodeURIComponent(childKey.trim());
+    const parent = parentKeyOrId.trim().replace(/^#/, '');
+    const isNumeric = /^\d+$/.test(parent);
+
+    // Method 1: Set parent field with key
     try {
-      await this.http(`/issue/${encodeURIComponent(childKey)}`, {
+      await this.http(`/issue/${child}`, {
         method: 'PUT',
-        body: JSON.stringify({ fields: { parent: parentRef } })
+        body: JSON.stringify({ fields: { parent: isNumeric ? { id: parent } : { key: parent } } })
+      });
+      return;
+    } catch { /* try next */ }
+
+    // Method 2: Set parent field with the other format
+    try {
+      await this.http(`/issue/${child}`, {
+        method: 'PUT',
+        body: JSON.stringify({ fields: { parent: isNumeric ? { key: parent } : { id: parent } } })
+      });
+      return;
+    } catch { /* try next */ }
+
+    // Method 3: Use issuelinks API (works for all Jira versions)
+    try {
+      // Fetch the parent issue to get both key and id
+      const parentIssue = await this.http<any>(`/issue/${encodeURIComponent(parent)}?fields=summary`);
+      const parentKey = parentIssue.key;
+      await this.http('/issueLink', {
+        method: 'POST',
+        body: JSON.stringify({
+          type: { name: 'Hierarchy' },
+          inwardIssue:  { key: parentKey },
+          outwardIssue: { key: childKey.trim() }
+        })
+      });
+      return;
+    } catch { /* try next */ }
+
+    // Method 4: Try "Parent/Child" link type name (varies by Jira instance)
+    try {
+      const parentIssue = await this.http<any>(`/issue/${encodeURIComponent(parent)}?fields=summary`);
+      await this.http('/issueLink', {
+        method: 'POST',
+        body: JSON.stringify({
+          type: { name: 'Parent-Child' },
+          inwardIssue:  { key: parentIssue.key },
+          outwardIssue: { key: childKey.trim() }
+        })
       });
     } catch {
-      const fallbackRef = isNumericId
-        ? { key: parentKeyOrId.trim() }
-        : { id: parentKeyOrId.trim() };
-      await this.http(`/issue/${encodeURIComponent(childKey)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ fields: { parent: fallbackRef } })
-      });
+      // All methods failed — log but don't throw
     }
   }
 
