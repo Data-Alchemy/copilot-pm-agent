@@ -132,3 +132,78 @@ describe('chatPanel', () => {
     expect(source).toContain('__user__');
   });
 });
+
+describe('retainContextWhenHidden usage', () => {
+  it('chatPanel uses retainContextWhenHidden (has serializer)', () => {
+    const source = readPanel('chatPanel');
+    expect(source).toContain('retainContextWhenHidden: true');
+  });
+
+  it('setupWizardPanel uses retainContextWhenHidden (needs state persistence)', () => {
+    const source = readPanel('setupWizardPanel');
+    expect(source).toContain('retainContextWhenHidden: true');
+  });
+
+  it('workItemPanel does NOT use retainContextWhenHidden', () => {
+    const source = readPanel('workItemPanel');
+    const noComments = source.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(noComments).not.toContain('retainContextWhenHidden: true');
+  });
+});
+
+describe('security checks', () => {
+  const allPanels = ['chatPanel', 'setupWizardPanel', 'sidebarViewProvider', 'workItemPanel'];
+
+  it.each(allPanels)('%s has Content-Security-Policy', (name) => {
+    const source = readPanel(name);
+    expect(source).toContain('Content-Security-Policy');
+  });
+
+  it.each(allPanels)('%s has no eval() or new Function()', (name) => {
+    const source = readPanel(name);
+    const noStrings = source.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
+    expect(noStrings).not.toMatch(/\beval\s*\(/);
+    expect(noStrings).not.toMatch(/new\s+Function\s*\(/);
+  });
+
+  it('setupWizardPanel does not embed actual tokens in webview pre object', () => {
+    const source = readPanel('setupWizardPanel');
+    // The pre object serialized into the webview should use boolean flags, not actual tokens
+    // Look for the getScript/safeJson pattern — tokens should only appear in the extension host
+    // message handlers (case 'save'), never in the HTML/JS template
+    expect(source).toContain('_hasJiraToken');
+    expect(source).toContain('_hasAdoToken');
+    expect(source).toContain('_hasGithubToken');
+    // The getHtml function should pass pre which contains _hasXxxToken booleans
+    // but NOT jiraToken/adoToken/githubToken string values
+    const getHtmlBlock = source.match(/function getHtml[\s\S]*?return \[/);
+    if (getHtmlBlock) {
+      expect(getHtmlBlock[0]).not.toContain('creds.jiraToken');
+      expect(getHtmlBlock[0]).not.toContain('creds.adoToken');
+      expect(getHtmlBlock[0]).not.toContain('creds.githubToken');
+    }
+  });
+
+  it('setupWizardPanel tokenStatus uses HTML escaping', () => {
+    const source = readPanel('setupWizardPanel');
+    // The safe() function should escape HTML before inserting into innerHTML
+    expect(source).toContain('replace(/&/g');
+    expect(source).toContain('replace(/</g');
+  });
+
+  it('chatPanel validates URLs before openExternal', () => {
+    const source = readPanel('chatPanel');
+    expect(source).toContain("startsWith('https://')");
+  });
+
+  it('sidebarViewProvider validates URLs before openExternal', () => {
+    const source = readPanel('sidebarViewProvider');
+    expect(source).toContain("startsWith('https://')");
+  });
+
+  it('setupWizardPanel uses ALLOWED_URLS whitelist for openExternal', () => {
+    const source = readPanel('setupWizardPanel');
+    expect(source).toContain('ALLOWED_URLS');
+    expect(source).toContain('isWhitelisted');
+  });
+});

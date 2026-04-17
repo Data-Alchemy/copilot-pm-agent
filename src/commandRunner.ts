@@ -1338,17 +1338,29 @@ export class CommandRunner {
         const childDesc = stripHtml(childFull.description ?? '');
         const childAc   = stripHtml((childFull as any).acceptanceCriteria ?? '');
 
-        // Map child type — for Jira destinations, prefer Sub-task to avoid hierarchy errors
+        // Map child type — for Jira destinations, adjust based on depth
         const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
         let childDstType = opts.typeMap[childSrcType];
         if (!childDstType) {
           const match = opts.dstTypes.find((d: string) => d.toLowerCase() === childSrcType.toLowerCase());
           childDstType = match ?? 'Task';
         }
-        // If destination is Jira and this is a child item, use Sub-task if available
-        if (opts.direction === 'ado-to-jira' || opts.direction === 'github-to-jira') {
-          const subTaskType = opts.dstTypes.find((d: string) => d.toLowerCase() === 'sub-task' || d.toLowerCase() === 'subtask');
-          if (subTaskType) { childDstType = subTaskType; }
+        // Jira hierarchy rules:
+        //   depth 0 (child of Story/Epic): use Sub-task with parentId
+        //   depth 1+ (child of Sub-task): use Task WITHOUT parentId (Sub-task can't have Sub-task children)
+        //     → link via issueLink instead
+        const isJiraDst = opts.direction.endsWith('-to-jira') || opts.direction === 'ado-to-jira' || opts.direction === 'github-to-jira';
+        let useParentField = true;
+        if (isJiraDst) {
+          if (opts.depth === 0) {
+            const subTaskType = opts.dstTypes.find((d: string) => d.toLowerCase() === 'sub-task' || d.toLowerCase() === 'subtask');
+            if (subTaskType) { childDstType = subTaskType; }
+          } else {
+            // Deeper levels: use Task, don't set parentId (would fail with hierarchy error)
+            const taskType = opts.dstTypes.find((d: string) => d.toLowerCase() === 'task') ?? 'Task';
+            childDstType = taskType;
+            useParentField = false;
+          }
         }
 
         let childDescFinal = opts.fields.has('description') ? childDesc : undefined;
@@ -1380,14 +1392,29 @@ export class CommandRunner {
           priority:           opts.fields.has('priority') ? childFull.priority : undefined,
           labels:             opts.fields.has('labels') && childFull.labels?.length ? childFull.labels : undefined,
           assigneeId:         childAssigneeId,
-          parentId:           opts.parentDstId,
+          parentId:           useParentField ? opts.parentDstId : undefined,
         });
 
-        // Fallback parent link if parentId wasn't set during creation
-        await opts.dstProvider.addParentLink?.(
-          childDest.key ?? childDest.id,
-          opts.parentDstId
-        ).catch(() => {});
+        // Link to parent — for depth 1+ in Jira, use issueLink since parentId won't work
+        if (useParentField) {
+          await opts.dstProvider.addParentLink?.(
+            childDest.key ?? childDest.id,
+            opts.parentDstId
+          ).catch(() => {});
+        } else {
+          // Create an issueLink (relates to / is child of)
+          try {
+            await opts.dstProvider.addParentLink?.(
+              childDest.key ?? childDest.id,
+              opts.parentDstId
+            );
+          } catch {
+            // If addParentLink fails entirely, at least add a comment reference
+            await opts.dstProvider.addComment(childDest.key,
+              `Linked to parent: ${opts.parentDstKey} (hierarchy too deep for native parent link)`
+            ).catch(() => {});
+          }
+        }
 
         // Migration comment
         await opts.dstProvider.addComment(childDest.key,

@@ -2348,10 +2348,17 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
          const match = dstTypes.find((d: string) => d.toLowerCase() === cSrcType.toLowerCase());
          cDstType = match ?? 'Task';
        }
-       // For Jira destinations, use Sub-task for children to respect hierarchy
-       if (destName.toLowerCase().includes('jira')) {
-         const subTask = dstTypes.find((d: string) => d.toLowerCase() === 'sub-task' || d.toLowerCase() === 'subtask');
-         if (subTask) { cDstType = subTask; }
+       // Jira hierarchy: depth 0 = Sub-task under Story/Epic; depth 1+ = Task (can't nest Sub-tasks)
+       const isJiraDst = destName.toLowerCase().includes('jira');
+       let useParentField = true;
+       if (isJiraDst) {
+         if (depth === 0) {
+           const subTask = dstTypes.find((d: string) => d.toLowerCase() === 'sub-task' || d.toLowerCase() === 'subtask');
+           if (subTask) { cDstType = subTask; }
+         } else {
+           cDstType = dstTypes.find((d: string) => d.toLowerCase() === 'task') ?? 'Task';
+           useParentField = false;
+         }
        }
        let cDescF = fields.has('description') ? cDesc : undefined;
        if (!cDescF && direction === 'jira-to-ado') { cDescF = cf.title; }
@@ -2361,7 +2368,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
        if (fields.has('assignee') && cf.assignee?.email) {
          try {
            if (direction === 'jira-to-ado') {
-             const match = dstMembers.find(m =>
+             const match = dstMembers.find((m: any) =>
                m.email?.toLowerCase() === cf.assignee!.email?.toLowerCase() ||
                m.displayName.toLowerCase() === cf.assignee!.displayName.toLowerCase()
              );
@@ -2381,10 +2388,20 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
          priority: fields.has('priority') ? cf.priority : undefined,
          labels: fields.has('labels') && cf.labels?.length ? cf.labels : undefined,
          assigneeId: cAssigneeId,
-         parentId: parentDstId,
+         parentId: useParentField ? parentDstId : undefined,
        });
-       // Fallback parent link
-       await (destProvider as any).addParentLink?.(cDest.key ?? cDest.id, parentDstId).catch(() => {});
+       // Link to parent
+       if (useParentField) {
+         await (destProvider as any).addParentLink?.(cDest.key ?? cDest.id, parentDstId).catch(() => {});
+       } else {
+         try {
+           await (destProvider as any).addParentLink?.(cDest.key ?? cDest.id, parentDstId);
+         } catch {
+           await destProvider.addComment(cDest.key,
+             `Linked to parent: ${parentDstKey} (hierarchy too deep for native parent link)`
+           ).catch(() => {});
+         }
+       }
        await destProvider.addComment(cDest.key,
          `Migrated from ${sourceName} â€” original: ${child.url}, parent: ${parentDstKey}`
        ).catch(() => {});
