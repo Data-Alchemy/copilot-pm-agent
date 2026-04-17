@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [0.4.2] - 2026-04-17
+
+### Features
+
+- adding interface for ticket type defaults in the configure platform menu for jira and merge
+- adding interface for ticket type defaults in the configure platform menu for jira
+
 ## [0.3.1] - 2026-04-17
 
 ### Features
