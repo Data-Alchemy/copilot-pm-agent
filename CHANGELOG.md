@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [0.10.0] - 2026-04-17
+
+### Features
+
+- field defaults, token validation, security hardening, code cleanup
+- field defaults, token validation, security hardening, code cleanup and merge
+
 ## [Unreleased]
 
 ### Features
