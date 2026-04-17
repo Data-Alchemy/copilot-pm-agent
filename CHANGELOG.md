@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.0.3] - 2026-04-17
+
+### Bug Fixes
+
+- when looping through the hierarchy need to make sure correct type hierarchy is maintained and merge
+- when looping through the hierarchy need to make sure correct type hierarchy is maintained
+
 ## [1.0.2] - 2026-04-17
 
 ### Bug Fixes
