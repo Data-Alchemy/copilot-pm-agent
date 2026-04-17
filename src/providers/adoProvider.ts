@@ -157,26 +157,56 @@ export class AdoProvider {
 
   async getComments(id: string): Promise<Comment[]> {
     const n = id.replace(/^#/, '').replace(/^AB#/i, '');
-    // Try the comments API (requires ADO Services 2019+). Fall back silently if not available.
-    for (const ver of ['7.2-preview.4', '7.1-preview.3', '6.0-preview.3']) {
-      try {
-        const res = await this.http<{ comments?: unknown[] }>(
-          `${this.orgUrl}/_apis/wit/workitems/${n}/comments?api-version=${ver}`
-        );
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (res.comments ?? []).map((c: any) => ({
-          id: String(c.id), author: c.createdBy?.displayName ?? 'Unknown',
-          body: stripHtml(c.text ?? ''), createdAt: c.createdDate ?? ''
-        }));
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        // 404 = endpoint not found on this ADO version — try next
-        if (msg.includes('404')) { continue; }
-        // Any other error (401, 403, 500) — stop trying
-        break;
+    // Try the comments API (requires ADO Services 2019+).
+    // Some ADO instances need the project in the URL, some don't.
+    const urls = [
+      `${this.orgUrl}/${this.projectEnc}/_apis/wit/workitems/${n}/comments`,
+      `${this.orgUrl}/_apis/wit/workitems/${n}/comments`,
+    ];
+    for (const baseUrl of urls) {
+      for (const ver of ['7.1-preview.3', '7.2-preview.4', '6.0-preview.3']) {
+        try {
+          const res = await this.http<{ comments?: unknown[] }>(
+            `${baseUrl}?api-version=${ver}`
+          );
+          const comments = (res.comments ?? []);
+          if (comments.length || urls.indexOf(baseUrl) === 0) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            return comments.map((c: any) => ({
+              id: String(c.id), author: c.createdBy?.displayName ?? 'Unknown',
+              body: stripHtml(c.text ?? ''), createdAt: c.createdDate ?? ''
+            }));
+          }
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg.includes('404')) { continue; }
+          break;
+        }
       }
     }
-    return [];   // comments not available on this ADO instance
+
+    // Fallback: extract from work item history (System.History)
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const updates = await this.http<{ value?: any[] }>(
+        `${this.orgUrl}/_apis/wit/workitems/${n}/updates?api-version=7.1`
+      );
+      const historyComments: Comment[] = [];
+      for (const u of (updates.value ?? [])) {
+        const hist = u.fields?.['System.History'];
+        if (hist?.newValue) {
+          historyComments.push({
+            id: String(u.id ?? historyComments.length),
+            author: u.revisedBy?.displayName ?? 'Unknown',
+            body: stripHtml(hist.newValue),
+            createdAt: u.revisedDate ?? ''
+          });
+        }
+      }
+      return historyComments;
+    } catch { /* history not available */ }
+
+    return [];
   }
 
   async addComment(id: string, text: string): Promise<Comment> {

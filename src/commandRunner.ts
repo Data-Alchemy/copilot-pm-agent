@@ -1242,11 +1242,26 @@ export class CommandRunner {
               `Migrated from ${srcName} — original: ${full.url}`
             ).catch(() => {});
 
-            if (fields.has('comments') && full.comments?.length) {
-              for (const c of full.comments.slice(0, 20)) {
-                await dstProvider.addComment(destItem.key,
-                  `**From ${srcName} (${c.author}):** ${c.body}`
-                ).catch(() => {});
+            if (fields.has('comments')) {
+              // Ensure comments are loaded (some providers don't auto-fetch)
+              if (!full.comments?.length) {
+                try {
+                  full.comments = await srcProvider.getComments(full.key ?? full.id);
+                } catch { /* comments unavailable */ }
+              }
+              if (full.comments?.length) {
+                let copied = 0;
+                for (const c of full.comments.slice(0, 20)) {
+                  try {
+                    await dstProvider.addComment(destItem.key,
+                      `**From ${srcName} (${c.author}${c.createdAt ? ' — ' + c.createdAt.slice(0, 10) : ''}):**\n\n${c.body}`
+                    );
+                    copied++;
+                  } catch { /* individual comment failure — continue */ }
+                }
+                if (copied > 0) {
+                  progress.report({ message: `${idx+1}/${selectedItems.length}: ${src.key} — ${copied} comment${copied !== 1 ? 's' : ''} copied` });
+                }
               }
             }
 
@@ -1422,11 +1437,18 @@ export class CommandRunner {
         ).catch(() => {});
 
         // Copy comments if selected
-        if (opts.fields.has('comments') && childFull.comments?.length) {
-          for (const c of childFull.comments.slice(0, 20)) {
-            await opts.dstProvider.addComment(childDest.key,
-              `**From ${opts.srcName} (${c.author}):** ${c.body}`
-            ).catch(() => {});
+        if (opts.fields.has('comments')) {
+          if (!childFull.comments?.length) {
+            try { childFull.comments = await opts.srcProvider.getComments(childFull.key ?? childFull.id); } catch { /* unavailable */ }
+          }
+          if (childFull.comments?.length) {
+            for (const c of childFull.comments.slice(0, 20)) {
+              try {
+                await opts.dstProvider.addComment(childDest.key,
+                  `**From ${opts.srcName} (${c.author}${c.createdAt ? ' — ' + c.createdAt.slice(0, 10) : ''}):**\n\n${c.body}`
+                );
+              } catch { /* skip */ }
+            }
           }
         }
 

@@ -2309,21 +2309,28 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
 
  const destItem = await destProvider.createWorkItem(createInput);
 
- // Copy comments if requested
- if (fields.has('comments') && full.comments?.length) {
- for (const c of full.comments.slice(0, 20)) {
- try {
- const body = `**Migrated from ${sourceName} — ${c.author}** (${c.createdAt?.slice(0, 10) ?? ''}):\n\n${c.body}`;
- await destProvider.addComment(destItem.key, body);
- } catch { /* skip individual comment failures */ }
- }
- }
-
  // Add migration note
  await destProvider.addComment(
  destItem.key,
  `Migrated from ${sourceName} — original: ${full.url}`
- ).catch(() => { /* ignore */ });
+ ).catch(() => {});
+
+ // Copy comments if requested
+ if (fields.has('comments')) {
+ if (!full.comments?.length) {
+ try { full.comments = await sourceProvider.getComments(full.key ?? full.id); } catch { /* unavailable */ }
+ }
+ if (full.comments?.length) {
+ stream.progress(`Copying ${full.comments.length} comment(s) for ${src.key}...`);
+ for (const c of full.comments.slice(0, 20)) {
+ try {
+ await destProvider.addComment(destItem.key,
+ `**From ${sourceName} (${c.author}${c.createdAt ? ' — ' + c.createdAt.slice(0, 10) : ''}):**\n\n${c.body}`
+ );
+ } catch { /* skip individual */ }
+ }
+ }
+ }
 
  // Migrate child items recursively if selected
  const migratedChildren: MigratedNode[] = [];
@@ -2407,11 +2414,18 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
        ).catch(() => {});
 
        // Copy comments if selected
-       if (fields.has('comments') && cf.comments?.length) {
-         for (const cm of cf.comments.slice(0, 20)) {
-           await destProvider.addComment(cDest.key,
-             `**From ${sourceName} (${cm.author}):** ${cm.body}`
-           ).catch(() => {});
+       if (fields.has('comments')) {
+         if (!cf.comments?.length) {
+           try { cf.comments = await sourceProvider.getComments(cf.key ?? cf.id); } catch { /* unavailable */ }
+         }
+         if (cf.comments?.length) {
+           for (const cm of cf.comments.slice(0, 20)) {
+             try {
+               await destProvider.addComment(cDest.key,
+                 `**From ${sourceName} (${cm.author}${cm.createdAt ? ' — ' + cm.createdAt.slice(0, 10) : ''}):**\n\n${cm.body}`
+               );
+             } catch { /* skip */ }
+           }
          }
        }
 
