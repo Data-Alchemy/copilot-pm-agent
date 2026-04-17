@@ -6,9 +6,8 @@ import { AdoProvider } from './providers/adoProvider';
 import { parseIntent, ParsedIntent } from './utils/intentParser';
 import { formatWorkItem, formatWorkItemList, formatUserList, formatSuccess, formatError } from './utils/formatter';
 import { cap, stripHtml } from './utils/strings';
-import { WorkItemPanel } from './panels/workItemPanel';
 import { WorkItem, WorkItemType, User } from './types';
-import { enhanceTicket, enhanceComment, estimateEffort, testAiConnection, listCopilotModels, markdownToAdoHtml, generateTasksForStory, AiConfig } from './utils/aiHelper';
+import { enhanceTicket, enhanceComment, testAiConnection, listCopilotModels, markdownToAdoHtml, generateTasksForStory, AiConfig } from './utils/aiHelper';
 
 export const RESULT_META_KEY = 'pmAgentMeta';
 

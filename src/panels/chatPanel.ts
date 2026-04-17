@@ -5,8 +5,8 @@
 
 import * as vscode from 'vscode';
 import { CommandRunner } from '../commandRunner';
-import { cap, escapeHtml } from '../utils/strings';
 import { CredentialManager } from '../utils/credentialManager';
+import { stripHtml } from '../utils/strings';
 import { createProvider } from '../providers/providerFactory';
 import { parseIntent } from '../utils/intentParser';
 export class ChatPanel {
@@ -100,7 +100,10 @@ export class ChatPanel {
 
   private async handleMessage(msg: { type: string; text?: string; command?: string; url?: string }) {
     if (msg.type === 'openUrl' && msg.url) {
-      await vscode.env.openExternal(vscode.Uri.parse(msg.url));
+      const url = String(msg.url);
+      if (url.startsWith('https://') || url.startsWith('http://')) {
+        await vscode.env.openExternal(vscode.Uri.parse(url));
+      }
       return;
     }
     if (msg.type === 'userMessage' && msg.text?.trim()) {
@@ -175,7 +178,7 @@ export class ChatPanel {
             item.assignee  ? `**Assignee:** ${item.assignee.displayName}` : '',
             pts            ? `**Points:** ${pts}` : '',
             item.sprint    ? `**Sprint:** ${item.sprint.split('\\').pop()}` : '',
-            item.description ? `\n${item.description.replace(/<[^>]+>/g, '').slice(0, 400)}` : ''
+            item.description ? `\n${stripHtml(item.description).slice(0, 400)}` : ''
           ].filter(Boolean).join('\n');
           this.send('bot', lines, [
             { label: 'Comment',  cmd: `/comment ${item.key}` },

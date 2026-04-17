@@ -4,6 +4,7 @@ import {
   CreateWorkItemInput, UpdateWorkItemInput, WorkItemQuery,
   ApiCredentials, AgentToolResult
 } from '../types';
+import { stripHtml } from '../utils/strings';
 
 export class AdoProvider {
   private orgUrl:     string;
@@ -158,7 +159,7 @@ export class AdoProvider {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (res.comments ?? []).map((c: any) => ({
           id: String(c.id), author: c.createdBy?.displayName ?? 'Unknown',
-          body: c.text?.replace(/<[^>]+>/g, '') ?? '', createdAt: c.createdDate ?? ''
+          body: stripHtml(c.text ?? ''), createdAt: c.createdDate ?? ''
         }));
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -189,7 +190,7 @@ export class AdoProvider {
       }
     }
     // Final fallback: append comment as a history note via work item update
-    const safeText = text.replace(/<[^>]+>/g, '');
+    const safeText = stripHtml(text);
     const ops = [{ op: 'add', path: '/fields/System.History', value: `<p>${safeText}</p>` }];
     await this.http(
       `${this.orgUrl}/_apis/wit/workitems/${n}?api-version=7.1`,
@@ -528,8 +529,8 @@ export class AdoProvider {
     return {
       id: String(wi.id), key: `#${wi.id}`,
       title:       f['System.Title'] ?? '(no title)',
-      description:        f['System.Description']?.replace(/<[^>]+>/g, '') ?? '',
-      acceptanceCriteria: f['Microsoft.VSTS.Common.AcceptanceCriteria']?.replace(/<[^>]+>/g, '') ?? '',
+      description:        stripHtml(f['System.Description'] ?? ''),
+      acceptanceCriteria: stripHtml(f['Microsoft.VSTS.Common.AcceptanceCriteria'] ?? ''),
       type, rawTypeName, status: f['System.State'] ?? 'New',
       priority: String(f['Microsoft.VSTS.Common.Priority'] ?? ''),
       assignee: f['System.AssignedTo'] ? {

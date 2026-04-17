@@ -12,8 +12,6 @@ export interface SetupResult {
   adoOrgUrl?:   string;
   adoProject?:  string;
   adoToken?:    string;
-  _jiraToken?:  string;
-  _adoToken?:   string;
   /** Per-issueType default values for custom/required fields */
   jiraFieldDefaults?: Record<string, Record<string, unknown>>;
 }
@@ -648,8 +646,9 @@ function getScript(safeJson: string): string {
     '  if(msg.type==="tokenStatus"){',
     '    var el=document.getElementById(msg.platform+"-token-status");',
     '    if(el){',
-    '      if(msg.valid){ el.innerHTML="<span style=\\"color:var(--vscode-testing-iconPassed,#4caf50)\\">\\u2713 Valid \\u2014 "+msg.user+"</span>"; }',
-    '      else{ el.innerHTML="<span style=\\"color:var(--vscode-errorForeground)\\">\\u2717 Invalid \\u2014 "+msg.error+"</span>"; }',
+    '      var safe=function(s){return String(s||\"\").replace(/&/g,\"&amp;\").replace(/</g,\"&lt;\").replace(/>/g,\"&gt;\").replace(/\"/g,\"&quot;\");};',
+    '      if(msg.valid){ el.innerHTML="<span style=\\"color:var(--vscode-testing-iconPassed,#4caf50)\\">\\u2713 Valid \\u2014 "+safe(msg.user)+"</span>"; }',
+    '      else{ el.innerHTML="<span style=\\"color:var(--vscode-errorForeground)\\">\\u2717 Invalid \\u2014 "+safe(msg.error)+"</span>"; }',
     '    }',
     '  }',
     '}',

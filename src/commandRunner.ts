@@ -7,7 +7,7 @@ import { CredentialManager } from './utils/credentialManager';
 import { createProvider } from './providers/providerFactory';
 import { AdoProvider } from './providers/adoProvider';
 import { WorkItem } from './types';
-import { cap, truncate, stripHtml } from './utils/strings';
+import { cap, stripHtml } from './utils/strings';
 
 
 export class CommandRunner {

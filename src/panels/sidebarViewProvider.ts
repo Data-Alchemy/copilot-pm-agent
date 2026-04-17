@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { CredentialManager } from '../utils/credentialManager';
 import { CommandRunner } from '../commandRunner';
 import { createProvider } from '../providers/providerFactory';
+import { stripHtml } from '../utils/strings';
 import { parseIntent } from '../utils/intentParser';
 
 export class SidebarViewProvider implements vscode.WebviewViewProvider {
@@ -56,7 +57,10 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
   private async _handleMessage(msg: { type: string; text?: string; command?: string; url?: string }) {
     if (msg.type === 'openUrl' && msg.url) {
-      await vscode.env.openExternal(vscode.Uri.parse(msg.url));
+      const url = String(msg.url);
+      if (url.startsWith('https://') || url.startsWith('http://')) {
+        await vscode.env.openExternal(vscode.Uri.parse(url));
+      }
       return;
     }
     if (msg.type === 'userMessage' && msg.text?.trim()) {
@@ -123,7 +127,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
             item.assignee ? `**Assignee:** ${item.assignee.displayName}` : '',
             pts ? `**Points:** ${pts}` : '',
             item.sprint ? `**Sprint:** ${item.sprint.split('\\').pop()}` : '',
-            item.description ? `\n${item.description.replace(/<[^>]+>/g, '').slice(0, 300)}` : ''
+            item.description ? `\n${stripHtml(item.description).slice(0, 300)}` : ''
           ].filter(Boolean).join('\n');
           this._send('bot', lines, [
             { label: 'Comment',  cmd: `/comment ${item.key}` },

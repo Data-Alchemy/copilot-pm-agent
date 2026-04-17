@@ -1,7 +1,7 @@
 // src/panels/workItemPanel.ts
 import * as vscode from 'vscode';
 import { WorkItem } from '../types';
-import { escapeHtml } from '../utils/strings';
+import { escapeHtml, stripHtml } from '../utils/strings';
 
 export class WorkItemPanel {
   public  static currentPanel: WorkItemPanel | undefined;
@@ -142,7 +142,7 @@ export class WorkItemPanel {
 <div class="key">${item.key}</div>
 <table>${rows}</table>
 ${item.description
-  ? `<div class="sec">Description</div><div class="desc">${escapeHtml(item.description.replace(/<[^>]+>/g, '').slice(0, 1000))}</div>`
+  ? `<div class="sec">Description</div><div class="desc">${escapeHtml(stripHtml(item.description).slice(0, 1000))}</div>`
   : ''}
 <button onclick="openInBrowser()">Open in Browser</button>
 <script>
