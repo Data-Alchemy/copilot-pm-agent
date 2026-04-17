@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [0.3.1] - 2026-04-17
+
+### Features
+
+- adding filtering to the ticket display for all interfaces and merge
+- persistent config panel, token validation, verbose auth errors
+
 ## [Unreleased]
 
 ### Features
