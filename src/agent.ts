@@ -186,7 +186,7 @@ export class PmAgent {
  if (item.comments?.length) {
  stream.markdown(
  `\n**Recent comments (${item.comments.length}):**\n` +
- item.comments.slice(-3).map(c =>
+ item.comments.slice(-3).map((c: any) =>
  `- **${c.author}** _(${c.createdAt.slice(0, 10)})_: ${c.body.slice(0, 120)}`
  ).join('\n')
  );
@@ -301,8 +301,8 @@ export class PmAgent {
  stream.progress('Loading sprint items...');
  const sprintItems = await provider.searchWorkItems({ sprintId: sprint.id, maxResults: 50 });
  stream.markdown(formatWorkItemList(sprintItems));
- const ua = sprintItems.filter(i => !i.assignee).length;
- const ue = sprintItems.filter(i => !i.storyPoints && !i.effort).length;
+ const ua = sprintItems.filter((i: any) => !i.assignee).length;
+ const ue = sprintItems.filter((i: any) => !i.storyPoints && !i.effort).length;
  if (ua) { stream.markdown(`\nWarning: **${ua} unassigned item${ua !== 1 ? 's' : ''}**`); }
  if (ue) { stream.markdown(`\n**${ue} item${ue !== 1 ? 's' : ''} with no estimate**`); }
  meta = { action: 'sprint', sprintHasUnassigned: ua > 0, sprintHasUnestimated: ue > 0, itemKey: sprintItems[0]?.key };
@@ -346,11 +346,11 @@ export class PmAgent {
  try {
  stream.progress('Test 1: project list...');
  const projects = await adoP.getProjects();
- const match = projects.find(p => p.name.toLowerCase() === (dc.adoProject ?? '').toLowerCase());
+ const match = projects.find((p: any) => p.name.toLowerCase() === (dc.adoProject ?? '').toLowerCase());
  stream.markdown(
  `\n**Test 1 — Projects:** ${match
  ? `"${match.name}" found`
- : `Warning: "${dc.adoProject}" not found. Available: ${projects.map(p => p.name).join(', ')}`
+ : `Warning: "${dc.adoProject}" not found. Available: ${projects.map((p: any) => p.name).join(', ')}`
  }`
  );
 
@@ -384,7 +384,7 @@ export class PmAgent {
  const members = await adoP.getProjectMembers();
  stream.markdown(`\n**Test 4 — Team members found:** ${members.length}`);
  if (members.length) {
- stream.markdown(members.slice(0, 5).map(m => `- ${m.displayName} (${m.email})`).join('\n'));
+ stream.markdown(members.slice(0, 5).map((m: any) => `- ${m.displayName} (${m.email})`).join('\n'));
  }
  } catch (e: unknown) {
  stream.markdown(`\n**Error:** ${e instanceof Error ? e.message : String(e)}`);
@@ -572,7 +572,7 @@ export class PmAgent {
  return { action: 'setuser_done', itemKey: manualUser.id };
  }
 
- const user = members.find(m => m.id === picked.userId);
+ const user = members.find((m: any) => m.id === picked.userId);
  if (!user) { stream.markdown('_Could not find user._'); return { action: 'error' }; }
 
  await this.credMgr.setDefaultUser(user);
@@ -611,7 +611,7 @@ export class PmAgent {
  let hint = '';
  if (p.type) {
  const l = p.type.toLowerCase();
- const match = adoTypes.find(t => {
+ const match = adoTypes.find((t: string) => {
  const tl = t.toLowerCase();
  if (l === 'story') { return tl.includes('story') || tl.includes('backlog item') || tl.includes('requirement'); }
  if (l === 'bug') { return tl.includes('bug'); }
@@ -623,7 +623,7 @@ export class PmAgent {
  if (match) { hint = ` (suggested: ${match})`; }
  }
  const picked = await vscode.window.showQuickPick(
- adoTypes.map(t => ({ label: t, value: t })),
+ adoTypes.map((t: string) => ({ label: t, value: t })),
  { title: `Work item type${hint}`, placeHolder: 'Select from your project types', ignoreFocusOut: true }
  );
  if (!picked) { stream.markdown('_Cancelled._'); return { action: 'create_cancelled' }; }
@@ -646,10 +646,10 @@ export class PmAgent {
 
  // Pre-select a sensible default based on any hint from the intent
  const jiraHint = p.type ?? 'story';
- const jiraDefault = jiraTypes.find(t => t.toLowerCase().includes(jiraHint.toLowerCase())) ?? jiraTypes[0];
+ const jiraDefault = jiraTypes.find((t: string) => t.toLowerCase().includes(jiraHint.toLowerCase())) ?? jiraTypes[0];
 
  const jiraPicked = await vscode.window.showQuickPick(
- jiraTypes.map(t => ({ label: t, value: t, picked: t === jiraDefault })),
+ jiraTypes.map((t: string) => ({ label: t, value: t, picked: t === jiraDefault })),
  {
  title: 'Issue type',
  placeHolder: `Suggested: ${jiraDefault}`,
@@ -862,13 +862,13 @@ export class PmAgent {
  }
 
  // Find closest match for AI suggestion (case-insensitive)
- const aiPrioMatch = priorityNames.find(p =>
+ const aiPrioMatch = priorityNames.find((p: string) =>
  p.toLowerCase() === aiPrio.toLowerCase() ||
  p.toLowerCase().includes(aiPrio.toLowerCase()) ||
  aiPrio.toLowerCase().includes(p.toLowerCase())
  ) ?? priorityNames[Math.floor(priorityNames.length / 2)]; // default to middle
 
- const prioOptions = priorityNames.map(name => ({
+ const prioOptions = priorityNames.map((name: string) => ({
  label: name === aiPrioMatch ? `${name} (AI suggested)` : name,
  value: name
  }));
@@ -891,7 +891,7 @@ export class PmAgent {
 
  if (availableLabels.length) {
  const labelPicks = await vscode.window.showQuickPick(
- availableLabels.map(l => ({ label: l, picked: false })),
+ availableLabels.map((l: string) => ({ label: l, picked: false })),
  {
  title: 'Labels (optional)',
  placeHolder: 'Select one or more labels, or press Escape to skip',
@@ -900,7 +900,7 @@ export class PmAgent {
  }
  );
  if (labelPicks?.length) {
- p.labels = labelPicks.map(l => l.label);
+ p.labels = labelPicks.map((l: any) => l.label);
  }
  } else {
  // No labels from API — allow free-text entry
@@ -952,7 +952,7 @@ export class PmAgent {
 
     if (sprints.length) {
       type SprintOption = { label: string; description: string; sprintId: string; sprintName: string; iterationPath: string };
-      const activeSprint = sprints.find(s => s.state === 'active');
+      const activeSprint = sprints.find((s: any) => s.state === 'active');
 
       // Active sprint FIRST — so pressing Enter immediately selects it
       const sprintOptions: SprintOption[] = [];
@@ -967,7 +967,7 @@ export class PmAgent {
           iterationPath: (activeSprint as any).iterationPath ?? activeSprint.id
         });
       }
-      for (const s of sprints.filter(s => s.state === 'future')) {
+      for (const s of sprints.filter((s: any) => s.state === 'future')) {
         sprintOptions.push({
           label:         s.name,
           description:   'Upcoming' + (s.startDate ? ` · starts ${s.startDate.slice(0, 10)}` : ''),
@@ -977,7 +977,7 @@ export class PmAgent {
           iterationPath: (s as any).iterationPath ?? s.id
         });
       }
-      for (const s of sprints.filter(s => s.state === 'closed').slice(-3)) {
+      for (const s of sprints.filter((s: any) => s.state === 'closed').slice(-3)) {
         sprintOptions.push({
           label:         s.name,
           description:   'Past' + (s.endDate ? ` · ended ${s.endDate.slice(0, 10)}` : ''),
@@ -1015,7 +1015,7 @@ export class PmAgent {
     }
  // ── Confirm ────────────────────────────────────────────────────────────
  const assigneeName = p.assigneeId
- ? (members.find(m => m.id === p.assigneeId)?.displayName ?? p.assigneeId)
+ ? (members.find((m: any) => m.id === p.assigneeId)?.displayName ?? p.assigneeId)
  : '_unassigned_';
 
  stream.markdown(
@@ -1158,8 +1158,8 @@ export class PmAgent {
 
  // Default candidate: prefer plain "Task", then any type containing "task"
  const defaultTaskType =
- allWorkItemTypes.find(t => t.toLowerCase() === 'task') ??
- allWorkItemTypes.find(t => t.toLowerCase().includes('task')) ??
+ allWorkItemTypes.find((t: string) => t.toLowerCase() === 'task') ??
+ allWorkItemTypes.find((t: string) => t.toLowerCase().includes('task')) ??
  allWorkItemTypes[0] ??
  'Task';
 
@@ -1233,10 +1233,10 @@ export class PmAgent {
  if (!suggested || !platform.includes('azure')) { return defaultTaskType; }
  const sl = suggested.toLowerCase().trim();
  // Exact match first
- const exact = allWorkItemTypes.find(t => t.toLowerCase() === sl);
+ const exact = allWorkItemTypes.find((t: string) => t.toLowerCase() === sl);
  if (exact) { return exact; }
  // Partial match (e.g. "task" matches "Task" or "Engineering Task")
- const partial = allWorkItemTypes.find(t => t.toLowerCase().includes(sl) || sl.includes(t.toLowerCase()));
+ const partial = allWorkItemTypes.find((t: string) => t.toLowerCase().includes(sl) || sl.includes(t.toLowerCase()));
  if (partial) { return partial; }
  // Default to plain Task
  return defaultTaskType;
@@ -1622,14 +1622,14 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  for (const i of items) {
  (byStatus[i.status] = byStatus[i.status] ?? []).push(i);
  }
- const totalPts = items.reduce((s, i) => s + (i.storyPoints ?? i.effort ?? 0), 0);
+ const totalPts = items.reduce((s: number, i: any) => s + (i.storyPoints ?? i.effort ?? 0), 0);
 
  stream.markdown(
  `## ${userName}'s Work Summary\n\n` +
  `**${items.length} item${items.length !== 1 ? 's' : ''} · ${totalPts} total pts**\n\n` +
  Object.entries(byStatus).map(([status, its]) =>
  `**${status}** (${its.length})\n` +
- its.map(i => `- [${i.key}](${i.url}) ${i.title}${i.storyPoints ? ` · ${i.storyPoints}pts` : ''}`).join('\n')
+ its.map((i: any) => `- [${i.key}](${i.url}) ${i.title}${i.storyPoints ? ` · ${i.storyPoints}pts` : ''}`).join('\n')
  ).join('\n\n')
  );
  return { action: 'summary_all', itemCount: items.length };
@@ -1664,7 +1664,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  if (item.comments?.length) {
  stream.markdown(
  `\n\n**Last ${Math.min(3, item.comments.length)} comment${item.comments.length !== 1 ? 's' : ''}:**\n\n` +
- item.comments.slice(-3).map(c =>
+ item.comments.slice(-3).map((c: any) =>
  `> **${c.author}** _(${c.createdAt.slice(0, 10)})_: ${c.body.slice(0, 150)}${c.body.length > 150 ? '...' : ''}`
  ).join('\n\n')
  );
@@ -1740,7 +1740,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  let assignee: User | undefined;
  if (intent.assigneeHint) {
  const h = intent.assigneeHint.toLowerCase();
- assignee = members.find(m =>
+ assignee = members.find((m: any) =>
  m.displayName.toLowerCase().includes(h) || (m.email ?? '').toLowerCase().includes(h)
  );
  }
