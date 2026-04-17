@@ -232,10 +232,15 @@ export class SetupWizardPanel {
             // Same as above but reads token from SecretStorage
             const secrets = context.secrets;
             const storedToken = await secrets.get('pmAgent.jira.apiToken');
-            const bUrl = String(pre.jiraBaseUrl ?? '').replace(/\/$/, '');
-            const em = String(pre.jiraEmail ?? '');
+            // Read from config (not pre) in case user changed fields
+            const cfg = vscode.workspace.getConfiguration('pmAgent');
+            const bUrl = String(cfg.get<string>('jira.baseUrl') ?? pre.jiraBaseUrl ?? '').replace(/\/$/, '');
+            const em = String(cfg.get<string>('jira.email') ?? pre.jiraEmail ?? '');
             const pk = String(msg.projectKey ?? '');
-            if (!storedToken || !bUrl || !em || !pk) { break; }
+            if (!storedToken || !bUrl || !em || !pk) {
+              panel.webview.postMessage({ type: 'jiraFieldsError', error: 'Missing credentials. Save your Jira config first, then select a project.' });
+              break;
+            }
             try {
               const { JiraProvider } = await import('../providers/jiraProvider');
               const jp = new JiraProvider({
@@ -478,7 +483,7 @@ function getScript(safeJson: string): string {
     'function activeTab(){ return document.getElementById("tab-ado").classList.contains("active") ? "ado" : "jira"; }',
     'function openUrl(key){ vscode.postMessage({type:"openUrl",url:key}); }',
     'function openAdoTokenPage(){ var orgUrl=document.getElementById("ado-org").value.trim(); var orgName=orgUrl?orgUrl.replace(/\\/$/, "").split("/").pop():null; var url=orgName?"https://dev.azure.com/"+orgName+"/_usersSettings/tokens":"https://dev.azure.com/_usersSettings/tokens"; vscode.postMessage({type:"openUrl",url:url}); }',
-    'function setStatus(platform,cls,html){ var el=document.getElementById(platform+"-project-status"); el.className="project-status"+(cls?" "+cls:""); el.innerHTML=html; }',
+    'function setStatus(platform,cls,html){ var el=document.getElementById(platform+"-project-status")||document.getElementById(platform+"-status"); if(!el)return; el.className="project-status"+(cls?" "+cls:""); el.innerHTML=html; }',
     '',
     'function fetchAdoProjects(){ var orgUrl=document.getElementById("ado-org").value.trim(); var token=document.getElementById("ado-token").value.trim(); if(!orgUrl||!token){setStatus("ado","error","Enter the Organisation URL and PAT first.");return;} setStatus("ado","","Loading projects..."); document.getElementById("ado-fetch-btn").disabled=true; vscode.postMessage({type:"fetchAdoProjects",orgUrl:orgUrl,token:token}); }',
     '',
@@ -535,8 +540,11 @@ function getScript(safeJson: string): string {
     '  var jtEl = document.getElementById("jira-token");',
     '  var baseUrl = document.getElementById("jira-url").value.trim();',
     '  var email = document.getElementById("jira-email").value.trim();',
-    '  var token = jtEl.dataset.hasStored === "1" ? "__stored__" : jtEl.value.trim();',
-    '  if(token === "__stored__"){ vscode.postMessage({type:"fetchJiraFieldsStored", projectKey:projectKey}); }',
+    '  if(!baseUrl || !email){ loading.style.display="none"; setStatus("jira-fields","error","Enter Jira URL and email first."); return; }',
+    '  var hasStored = jtEl.dataset.hasStored === "1";',
+    '  var token = hasStored ? "" : jtEl.value.trim();',
+    '  if(!hasStored && !token){ loading.style.display="none"; setStatus("jira-fields","error","Enter or save your API token first."); return; }',
+    '  if(hasStored){ vscode.postMessage({type:"fetchJiraFieldsStored", projectKey:projectKey}); }',
     '  else{ vscode.postMessage({type:"fetchJiraFields", baseUrl:baseUrl, email:email, token:token, projectKey:projectKey}); }',
     '}',
     '',
