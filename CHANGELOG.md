@@ -6,24 +6,6 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
-## [1.0.0] - 2026-04-17
-
-### Breaking Changes
-
-- add GitHub Projects as third platform provider
-
-### Features
-
-- add GitHub Projects as third platform provider
-
-### Bug Fixes
-
-- add explicit types for strict mode compliance
-
-### Other Changes
-
-- Merge branch 'main' of https://github.com/Data-Alchemy/copilot-pm-agent
-
 ## [Unreleased]
 
 ### Features

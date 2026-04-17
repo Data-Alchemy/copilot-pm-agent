@@ -34,10 +34,10 @@ describe('panel compiled output', () => {
       expect(source).toContain('enableScripts');
     });
 
-    it('does NOT use retainContextWhenHidden in runtime code (except chatPanel which has a serializer)', () => {
-      // chatPanel is allowed to use retainContextWhenHidden because
-      // extension.ts registers a WebviewPanelSerializer for it
-      if (panelName === 'chatPanel') { return; }
+    it('does NOT use retainContextWhenHidden in runtime code (except panels that need state persistence)', () => {
+      // chatPanel: has a WebviewPanelSerializer
+      // setupWizardPanel: needs to retain type mappings and field defaults UI state
+      if (panelName === 'chatPanel' || panelName === 'setupWizardPanel') { return; }
       const noComments = source.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
       expect(noComments).not.toContain('retainContextWhenHidden: true');
     });

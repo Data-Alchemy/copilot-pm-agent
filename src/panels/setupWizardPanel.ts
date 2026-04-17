@@ -37,11 +37,13 @@ export class SetupWizardPanel {
         'pmAgentSetup',
         'PM Agent — Platform Configuration',
         vscode.ViewColumn.One,
-        { enableScripts: true, localResourceRoots: [context.extensionUri] }
+        { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [context.extensionUri] }
       );
 
       const pre = existingCreds ?? {};
       panel.webview.html = getHtml(pre);
+
+      let _lastSavedResult: SetupResult | undefined;
 
       let settled = false;
       const settle = (result: SetupResult | undefined) => {
@@ -127,6 +129,7 @@ export class SetupWizardPanel {
                   await context.globalState.update('pmAgent.jiraFieldDefaults', data.jiraFieldDefaults);
                 }
                 panel.webview.postMessage({ type: 'saveSuccess', platform: 'jira' });
+                _lastSavedResult = data;
               } else if (data.platform === 'github') {
                 await config.update('platform', 'github', vscode.ConfigurationTarget.Global);
                 await config.update('github.owner', data.githubOwner!, vscode.ConfigurationTarget.Global);
@@ -136,6 +139,7 @@ export class SetupWizardPanel {
                   await context.secrets.store('pmAgent.github.personalAccessToken', data.githubToken);
                 }
                 panel.webview.postMessage({ type: 'saveSuccess', platform: 'github' });
+                _lastSavedResult = data;
               } else {
                 await config.update('platform', 'azuredevops', vscode.ConfigurationTarget.Global);
                 await config.update('azureDevOps.orgUrl', data.adoOrgUrl!, vscode.ConfigurationTarget.Global);
@@ -144,6 +148,7 @@ export class SetupWizardPanel {
                   await context.secrets.store('pmAgent.ado.personalAccessToken', data.adoToken);
                 }
                 panel.webview.postMessage({ type: 'saveSuccess', platform: 'ado' });
+                _lastSavedResult = data;
               }
               // Save type mappings (applies across all platforms)
               if (data.typeMappings && Object.keys(data.typeMappings).length) {
@@ -445,7 +450,12 @@ export class SetupWizardPanel {
         }
       });
 
-      panel.onDidDispose(() => settle(undefined));
+      panel.onDidDispose(() => {
+        if (!settled) {
+          settled = true;
+          resolve(_lastSavedResult);
+        }
+      });
     });
   }
 }
@@ -571,8 +581,13 @@ function getBody(): string {
     '<hr>',
     '<div style="margin-top:16px">',
     '  <label style="display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--vscode-descriptionForeground);margin-bottom:8px">Type Mapping (Migration)</label>',
-    '  <div class="hint" style="margin-bottom:8px">Define how work item types map between platforms when migrating. Click Load to scan types from configured platforms.</div>',
-    '  <button class="btn btn-secondary" id="load-type-maps-btn">Load Types</button>',
+    '  <div class="hint" style="margin-bottom:8px">Configure how types map when migrating between platforms. Select direction, then map each type.</div>',
+    '  <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">',
+    '    <select id="typemap-src" style="flex:1;padding:5px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:12px"><option value="">Source platform</option></select>',
+    '    <span style="color:var(--vscode-descriptionForeground)">\\u2192</span>',
+    '    <select id="typemap-dst" style="flex:1;padding:5px 8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:12px"><option value="">Destination platform</option></select>',
+    '    <button class="btn btn-secondary" id="load-type-maps-btn">Load</button>',
+    '  </div>',
     '  <div class="project-status" id="typemap-status"></div>',
     '  <div id="typemap-container" style="margin-top:8px"></div>',
     '</div>',
@@ -793,76 +808,81 @@ function getScript(safeJson: string): string {
     '',
     '// ── Type mapping ──',
     'var _typeMappings = pre.typeMappings || {};',
+    'var _platformTypes = {};',
+    'var _defaultMaps = {"User Story":"Story","Product Backlog Item":"Story","Requirement":"Story","Story":"User Story","Enhancement":"Feature","Task":"Task","Bug":"Bug","Epic":"Epic","Feature":"Feature","Sub-task":"Task","Test Case":"Task","Test":"Task","bug":"Bug","enhancement":"Story","task":"Task","epic":"Epic"};',
     '',
     'function renderTypeMaps(platformTypes){',
-    '  var container = document.getElementById("typemap-container");',
-    '  container.innerHTML = "";',
-    '  var platforms = Object.keys(platformTypes);',
-    '  if(platforms.length < 2){ setStatus("typemap","","Configure at least 2 platforms to set up type mappings."); return; }',
-    '  var pairs = [];',
-    '  for(var a=0;a<platforms.length;a++){',
-    '    for(var b=0;b<platforms.length;b++){',
-    '      if(a!==b) pairs.push({src:platforms[a], dst:platforms[b]});',
-    '    }',
-    '  }',
-    '  var count = 0;',
-    '  pairs.forEach(function(pair){',
-    '    var key = pair.src + "-to-" + pair.dst;',
-    '    var srcTypes = platformTypes[pair.src] || [];',
-    '    var dstTypes = platformTypes[pair.dst] || [];',
-    '    if(!srcTypes.length || !dstTypes.length) return;',
-    '    var saved = _typeMappings[key] || {};',
-    '    var group = document.createElement("div");',
-    '    group.style.cssText = "margin-bottom:10px;border:1px solid var(--vscode-panel-border,#3c3c3c);border-radius:4px;padding:10px;";',
-    '    var title = document.createElement("div");',
-    '    title.style.cssText = "font-weight:600;font-size:12px;margin-bottom:8px;";',
-    '    var labels = {jira:"Jira",ado:"Azure DevOps",github:"GitHub"};',
-    '    title.textContent = (labels[pair.src]||pair.src) + " \\u2192 " + (labels[pair.dst]||pair.dst);',
-    '    group.appendChild(title);',
-    '    srcTypes.forEach(function(srcType){',
-    '      var row = document.createElement("div");',
-    '      row.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:4px;";',
-    '      var lbl = document.createElement("span");',
-    '      lbl.style.cssText = "font-size:11px;min-width:120px;color:var(--vscode-descriptionForeground);";',
-    '      lbl.textContent = srcType;',
-    '      row.appendChild(lbl);',
-    '      var arrow = document.createElement("span");',
-    '      arrow.textContent = "\\u2192";',
-    '      arrow.style.cssText = "font-size:11px;color:var(--vscode-descriptionForeground);";',
-    '      row.appendChild(arrow);',
-    '      var sel = document.createElement("select");',
-    '      sel.setAttribute("data-mapkey", key);',
-    '      sel.setAttribute("data-srctype", srcType);',
-    '      sel.style.cssText = "flex:1;padding:3px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:11px;";',
-    '      var def = document.createElement("option");',
-    '      def.value = ""; def.textContent = "-- auto --";',
-    '      sel.appendChild(def);',
-    '      dstTypes.forEach(function(dstType){',
-    '        var opt = document.createElement("option");',
-    '        opt.value = dstType; opt.textContent = dstType;',
-    '        if(saved[srcType] === dstType) opt.selected = true;',
-    '        else if(!saved[srcType] && dstType.toLowerCase() === srcType.toLowerCase()) opt.selected = true;',
-    '        sel.appendChild(opt);',
-    '      });',
-    '      row.appendChild(sel);',
-    '      group.appendChild(row);',
-    '      count++;',
-    '    });',
-    '    container.appendChild(group);',
+    '  _platformTypes = platformTypes;',
+    '  var srcSel = document.getElementById("typemap-src");',
+    '  var dstSel = document.getElementById("typemap-dst");',
+    '  var labels = {jira:"Jira",ado:"Azure DevOps",github:"GitHub"};',
+    '  srcSel.innerHTML = "<option value=\\"\\">Source</option>";',
+    '  dstSel.innerHTML = "<option value=\\"\\">Destination</option>";',
+    '  Object.keys(platformTypes).forEach(function(k){',
+    '    var o1=document.createElement("option");o1.value=k;o1.textContent=labels[k]||k;srcSel.appendChild(o1);',
+    '    var o2=document.createElement("option");o2.value=k;o2.textContent=labels[k]||k;dstSel.appendChild(o2);',
     '  });',
-    '  setStatus("typemap","ok",count+" type mapping"+(count!==1?"s":"")+" configured. Save to persist.");',
+    '  var keys=Object.keys(platformTypes);',
+    '  if(keys.length>=2){srcSel.value=keys[0];dstSel.value=keys[1];showMappingForPair();}',
+    '  else{setStatus("typemap","","Configure at least 2 platforms first.");}',
     '}',
     '',
+    'function showMappingForPair(){',
+    '  var src=document.getElementById("typemap-src").value;',
+    '  var dst=document.getElementById("typemap-dst").value;',
+    '  var container=document.getElementById("typemap-container");',
+    '  container.innerHTML="";',
+    '  if(!src||!dst||src===dst){setStatus("typemap","","Select different source and destination.");return;}',
+    '  var srcTypes=_platformTypes[src]||[];',
+    '  var dstTypes=_platformTypes[dst]||[];',
+    '  if(!srcTypes.length||!dstTypes.length){setStatus("typemap","error","No types found.");return;}',
+    '  var key=src+"-to-"+dst;',
+    '  var saved=_typeMappings[key]||{};',
+    '  srcTypes.forEach(function(srcType){',
+    '    var row=document.createElement("div");',
+    '    row.style.cssText="display:flex;align-items:center;gap:8px;margin-bottom:4px;";',
+    '    var lbl=document.createElement("span");',
+    '    lbl.style.cssText="font-size:12px;min-width:140px;";',
+    '    lbl.textContent=srcType;',
+    '    row.appendChild(lbl);',
+    '    var arrow=document.createElement("span");arrow.textContent="\\u2192";arrow.style.color="var(--vscode-descriptionForeground)";',
+    '    row.appendChild(arrow);',
+    '    var sel=document.createElement("select");',
+    '    sel.setAttribute("data-mapkey",key);',
+    '    sel.setAttribute("data-srctype",srcType);',
+    '    sel.style.cssText="flex:1;padding:4px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:12px;";',
+    '    var def=document.createElement("option");def.value="";def.textContent="-- skip --";sel.appendChild(def);',
+    '    var best=saved[srcType]||"";',
+    '    if(!best){',
+    '      var exact=dstTypes.find(function(d){return d.toLowerCase()===srcType.toLowerCase();});',
+    '      if(exact)best=exact;',
+    '      else if(_defaultMaps[srcType]){var m=_defaultMaps[srcType];var f=dstTypes.find(function(d){return d.toLowerCase()===m.toLowerCase();});if(f)best=f;}',
+    '    }',
+    '    dstTypes.forEach(function(dt){',
+    '      var opt=document.createElement("option");opt.value=dt;opt.textContent=dt;',
+    '      if(dt===best)opt.selected=true;',
+    '      sel.appendChild(opt);',
+    '    });',
+    '    row.appendChild(sel);',
+    '    container.appendChild(row);',
+    '  });',
+    '  var labels={jira:"Jira",ado:"Azure DevOps",github:"GitHub"};',
+    '  setStatus("typemap","ok",(labels[src]||src)+" \\u2192 "+(labels[dst]||dst)+": "+srcTypes.length+" types. Save to persist.");',
+    '}',
+    '',
+    'document.getElementById("typemap-src").addEventListener("change",showMappingForPair);',
+    'document.getElementById("typemap-dst").addEventListener("change",showMappingForPair);',
+    '',
     'function collectTypeMappings(){',
-    '  var mappings = {};',
-    '  var selects = document.querySelectorAll("#typemap-container [data-mapkey]");',
+    '  var mappings=JSON.parse(JSON.stringify(_typeMappings));',
+    '  var selects=document.querySelectorAll("#typemap-container [data-mapkey]");',
     '  selects.forEach(function(sel){',
-    '    var key = sel.getAttribute("data-mapkey");',
-    '    var srcType = sel.getAttribute("data-srctype");',
-    '    var val = sel.value;',
+    '    var key=sel.getAttribute("data-mapkey");',
+    '    var srcType=sel.getAttribute("data-srctype");',
+    '    var val=sel.value;',
     '    if(val){',
-    '      if(!mappings[key]) mappings[key] = {};',
-    '      mappings[key][srcType] = val;',
+    '      if(!mappings[key])mappings[key]={};',
+    '      mappings[key][srcType]=val;',
     '    }',
     '  });',
     '  return mappings;',
@@ -946,7 +966,10 @@ function getScript(safeJson: string): string {
     'if(pre._hasGithubToken && pre.githubOwner){ validateToken("github"); }',
     '',
     'function save(){',
+    '  try{',
     '  var tab=activeTab();',
+    '  var tm = {};',
+    '  try{ tm = collectTypeMappings(); }catch(e){}',
     '  if(tab==="jira"){',
     '    var baseUrl=document.getElementById("jira-url").value.trim();',
     '    var email=document.getElementById("jira-email").value.trim();',
@@ -956,7 +979,9 @@ function getScript(safeJson: string): string {
     '    if(!baseUrl){alert("Enter your Jira Base URL.");return;}',
     '    if(!email){alert("Enter your Jira account email.");return;}',
     '    if(!token&&jtEl.dataset.hasStored!=="1"){alert("Enter your Jira API token.");return;}',
-    '    vscode.postMessage({type:"save",data:{platform:"jira",jiraBaseUrl:baseUrl,jiraEmail:email,jiraToken:token,jiraProject:project,jiraFieldDefaults:collectJiraFieldDefaults(),typeMappings:collectTypeMappings()}});',
+    '    var fd = {};',
+    '    try{ fd = collectJiraFieldDefaults(); }catch(e){}',
+    '    vscode.postMessage({type:"save",data:{platform:"jira",jiraBaseUrl:baseUrl,jiraEmail:email,jiraToken:token,jiraProject:project,jiraFieldDefaults:fd,typeMappings:tm}});',
     '  } else if(tab==="github"){',
     '    var ghOwner=document.getElementById("gh-owner").value.trim();',
     '    var ghRepo=document.getElementById("gh-repo").value.trim();',
@@ -966,7 +991,7 @@ function getScript(safeJson: string): string {
     '    if(!ghOwner){alert("Enter the GitHub owner.");return;}',
     '    if(!ghRepo){alert("Enter the repository name.");return;}',
     '    if(!ghToken&&gtEl.dataset.hasStored!=="1"){alert("Enter your GitHub PAT.");return;}',
-    '    vscode.postMessage({type:"save",data:{platform:"github",githubOwner:ghOwner,githubRepo:ghRepo,githubToken:ghToken,githubProjectNumber:ghProjNum?Number(ghProjNum):undefined,typeMappings:collectTypeMappings()}});',
+    '    vscode.postMessage({type:"save",data:{platform:"github",githubOwner:ghOwner,githubRepo:ghRepo,githubToken:ghToken,githubProjectNumber:ghProjNum?Number(ghProjNum):undefined,typeMappings:tm}});',
     '  } else {',
     '    var orgUrl=document.getElementById("ado-org").value.trim();',
     '    var atEl=document.getElementById("ado-token");',
@@ -974,9 +999,9 @@ function getScript(safeJson: string): string {
     '    var token2=atEl.dataset.hasStored==="1"?"":atEl.value.trim();',
     '    if(!orgUrl){alert("Enter your Azure DevOps Organisation URL.");return;}',
     '    if(!token2&&atEl.dataset.hasStored!=="1"){alert("Enter your Personal Access Token.");return;}',
-    '    if(!project2){alert("Load and select a project first.");return;}',
-    '    vscode.postMessage({type:"save",data:{platform:"azuredevops",adoOrgUrl:orgUrl,adoToken:token2,adoProject:project2,typeMappings:collectTypeMappings()}});',
+    '    vscode.postMessage({type:"save",data:{platform:"azuredevops",adoOrgUrl:orgUrl,adoToken:token2,adoProject:project2,typeMappings:tm}});',
     '  }',
+    '  }catch(err){ setStatus(activeTab(),"error","Save error: "+err.message); }',
     '}',
   ].join('\n');
 }

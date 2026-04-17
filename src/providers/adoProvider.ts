@@ -120,19 +120,26 @@ export class AdoProvider {
     if (query.text)                   { conds.push(`[System.Title] Contains '${safe(query.text)}'`); }
 
     const wiql = `SELECT [System.Id] FROM WorkItems WHERE ${conds.join(' AND ')} ORDER BY [System.ChangedDate] DESC`;
-    const url  = `${this.orgUrl}/${this.projectEnc}/_apis/wit/wiql?$top=${query.maxResults ?? 25}&api-version=7.1`;
+    const top = Math.min(query.maxResults ?? 25, 1000);
+    const url  = `${this.orgUrl}/${this.projectEnc}/_apis/wit/wiql?$top=${top}&api-version=7.1`;
     this.lastWiql = wiql; this.lastUrl = url;
 
     const res = await this.http<{ workItems?: Array<{ id: number }> }>(url, { method: 'POST', body: JSON.stringify({ query: wiql }) });
-    const ids = (res.workItems ?? []).map(w => w.id).slice(0, 200);
-    this.lastRawCount = ids.length;
-    if (!ids.length) { return []; }
+    const allIds = (res.workItems ?? []).map(w => w.id);
+    this.lastRawCount = allIds.length;
+    if (!allIds.length) { return []; }
 
-    const details = await this.http<{ value?: unknown[] }>(
-      `${this.orgUrl}/_apis/wit/workitems?ids=${ids.join(',')}&$expand=all&api-version=7.1`
-    );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (details.value ?? []).map((w: any) => this.map(w));
+    // Batch fetch in groups of 200 (API limit)
+    const items: WorkItem[] = [];
+    for (let i = 0; i < allIds.length; i += 200) {
+      const batch = allIds.slice(i, i + 200);
+      const details = await this.http<{ value?: unknown[] }>(
+        `${this.orgUrl}/_apis/wit/workitems?ids=${batch.join(',')}&$expand=all&api-version=7.1`
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      items.push(...(details.value ?? []).map((w: any) => this.map(w)));
+    }
+    return items;
   }
 
   // ── Single item ───────────────────────────────────────────────────────────

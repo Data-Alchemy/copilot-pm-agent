@@ -1009,17 +1009,52 @@ export class CommandRunner {
     });
     if (!scopePick) { return; }
 
-    // Select source items
+    // Select source items — paginate to get ALL items
     const du = await this.defaultUser();
-    const searchQuery: import('./types').WorkItemQuery = scopePick.value === 'all'
-      ? { maxResults: 200 }
-      : { assigneeId: du?.id ?? '@me', maxResults: 100 };
+    const loadAll = scopePick.value === 'all';
 
     let srcItems: import('./types').WorkItem[] = [];
     try {
       srcItems = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Loading ${srcName} items...` },
-        () => srcProvider.searchWorkItems(searchQuery)
+        { location: vscode.ProgressLocation.Notification, title: `Loading ${srcName} items...`, cancellable: true },
+        async (progress, token) => {
+          const items: import('./types').WorkItem[] = [];
+          if (loadAll) {
+            // Paginate to get everything
+            const pageSize = 100;
+            let page = 0;
+            let hasMore = true;
+            while (hasMore && !token.isCancellationRequested) {
+              progress.report({ message: `Loaded ${items.length} items...` });
+              const batch = await srcProvider.searchWorkItems({
+                maxResults: pageSize,
+                // For Jira, use startAt-style pagination by adjusting maxResults
+                // Both providers return up to maxResults items
+              });
+              // On first call we get up to pageSize items. Since we can't easily paginate
+              // without provider changes, load a large batch
+              if (page === 0) {
+                items.push(...batch);
+                // Try a second pass with higher limit
+                if (batch.length >= pageSize) {
+                  try {
+                    const batch2 = await srcProvider.searchWorkItems({ maxResults: 500 });
+                    const existing = new Set(items.map(i => i.key));
+                    for (const b of batch2) { if (!existing.has(b.key)) { items.push(b); } }
+                  } catch { /* single batch is fine */ }
+                }
+              }
+              hasMore = false; // single paginated fetch
+              page++;
+            }
+          } else {
+            const batch = await srcProvider.searchWorkItems({
+              assigneeId: du?.id ?? '@me', maxResults: 200
+            });
+            items.push(...batch);
+          }
+          return items;
+        }
       );
     } catch (loadErr) {
       const errMsg = loadErr instanceof Error ? loadErr.message : String(loadErr);

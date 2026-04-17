@@ -95,18 +95,31 @@ export class JiraProvider {
     const jql    = (parts.length ? parts.join(' AND ') : `project = "${project}"`) + ' ORDER BY updated DESC';
     const fields = 'summary,status,issuetype,assignee,reporter,priority,labels,customfield_10016,customfield_10028,customfield_10014,story_points,customfield_10020,sprint,created,updated,description,project,comment';
 
-    // Use /search/jql (Jira deprecated /search in favour of this endpoint)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const r = await this.http<any>('/search/jql', {
-      method: 'POST',
-      body: JSON.stringify({
-        jql,
-        maxResults: query.maxResults ?? 25,
-        fields:     fields.split(',')
-      })
-    });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (r.issues ?? []).map((i: any) => this.mapIssue(i));
+    const max = query.maxResults ?? 25;
+    const allItems: WorkItem[] = [];
+    let startAt = 0;
+    const pageSize = Math.min(max, 100);
+
+    while (allItems.length < max) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = await this.http<any>('/search/jql', {
+        method: 'POST',
+        body: JSON.stringify({
+          jql,
+          startAt,
+          maxResults: pageSize,
+          fields: fields.split(',')
+        })
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const issues = (r.issues ?? []).map((i: any) => this.mapIssue(i));
+      allItems.push(...issues);
+      startAt += issues.length;
+      // Stop if fewer results than page size (last page) or reached total
+      if (issues.length < pageSize || allItems.length >= (r.total ?? max)) { break; }
+    }
+
+    return allItems;
   }
 
   // ── Single item ───────────────────────────────────────────────────────────
