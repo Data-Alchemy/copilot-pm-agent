@@ -1,0 +1,280 @@
+{
+  "name": "copilot-pm-agent",
+  "displayName": "Copilot PM Agent",
+  "description": "VS Code Agent that lets you open, estimate, and assign Jira & Azure DevOps work items via chat",
+  "version": "0.2.2",
+  "publisher": "DataAlchemy",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other",
+    "AI"
+  ],
+  "keywords": [
+    "jira",
+    "azure devops",
+    "agent",
+    "project management",
+    "copilot"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "pm-agent.main",
+        "name": "pm",
+        "fullName": "PM Agent",
+        "description": "Manage Jira and Azure DevOps work items from VS Code",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "list",
+            "description": "List work items assigned to the default user"
+          },
+          {
+            "name": "open",
+            "description": "Open a work item by key (e.g. #1234 or ENG-42)"
+          },
+          {
+            "name": "create",
+            "description": "Create a story, task or bug with AI-assisted structuring"
+          },
+          {
+            "name": "comment",
+            "description": "Add a comment to a work item"
+          },
+          {
+            "name": "status",
+            "description": "Transition a work item to a new status"
+          },
+          {
+            "name": "attach",
+            "description": "Upload a file attachment to a work item"
+          },
+          {
+            "name": "summary",
+            "description": "Summarise your workload or a single work item"
+          },
+          {
+            "name": "estimate",
+            "description": "Set story points or effort on a work item"
+          },
+          {
+            "name": "assign",
+            "description": "Assign a work item to a team member"
+          },
+          {
+            "name": "sprint",
+            "description": "View the current active sprint"
+          },
+          {
+            "name": "setuser",
+            "description": "Set the default user for all actions"
+          },
+          {
+            "name": "setupai",
+            "description": "Configure AI provider (GitHub Copilot, Anthropic, OpenAI, Azure)"
+          },
+          {
+            "name": "debug",
+            "description": "Run connectivity diagnostics"
+          },
+          {
+            "name": "parent",
+            "description": "Set or change the parent item for a task or bug (Azure DevOps)"
+          },
+          {
+            "name": "move",
+            "description": "Move a work item to a different sprint or iteration"
+          },
+          {
+            "name": "migrate",
+            "description": "Copy a work item from one platform to the other (ADO ↔ Jira)"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "pm-agent.openChat",
+        "title": "PM Agent: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "pm-agent.configurePlatform",
+        "title": "PM Agent: Configure Platform",
+        "icon": "$(settings)"
+      },
+      {
+        "command": "pm-agent.configureAi",
+        "title": "PM Agent: Configure AI Provider",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "pm-agent.setDefaultUser",
+        "title": "PM Agent: Set Default User",
+        "icon": "$(person)"
+      },
+      {
+        "command": "pm-agent.openWorkItemPanel",
+        "title": "PM Agent: Open Work Item",
+        "icon": "$(output)"
+      },
+      {
+        "command": "pm-agent.list",
+        "title": "PM Agent: List My Work Items"
+      },
+      {
+        "command": "pm-agent.open",
+        "title": "PM Agent: Open Work Item"
+      },
+      {
+        "command": "pm-agent.create",
+        "title": "PM Agent: Create Work Item"
+      },
+      {
+        "command": "pm-agent.comment",
+        "title": "PM Agent: Add Comment"
+      },
+      {
+        "command": "pm-agent.status",
+        "title": "PM Agent: Change Status"
+      },
+      {
+        "command": "pm-agent.assign",
+        "title": "PM Agent: Assign Work Item"
+      },
+      {
+        "command": "pm-agent.estimate",
+        "title": "PM Agent: Set Story Points"
+      },
+      {
+        "command": "pm-agent.move",
+        "title": "PM Agent: Move to Sprint"
+      },
+      {
+        "command": "pm-agent.parent",
+        "title": "PM Agent: Set Parent"
+      },
+      {
+        "command": "pm-agent.sprint",
+        "title": "PM Agent: Show Current Sprint"
+      },
+      {
+        "command": "pm-agent.migrate",
+        "title": "PM Agent: Migrate Ticket (ADO ↔ Jira)"
+      },
+      {
+        "command": "pm-agent.debug",
+        "title": "PM Agent: Debug Connection"
+      }
+    ],
+    "configuration": {
+      "title": "PM Agent",
+      "properties": {
+        "pmAgent.platform": {
+          "type": "string",
+          "enum": [
+            "jira",
+            "azuredevops"
+          ],
+          "default": "jira",
+          "description": "Which platform to connect to"
+        },
+        "pmAgent.jira.baseUrl": {
+          "type": "string",
+          "description": "Jira base URL (e.g. https://yourorg.atlassian.net)"
+        },
+        "pmAgent.jira.email": {
+          "type": "string",
+          "description": "Jira account email"
+        },
+        "pmAgent.jira.defaultProject": {
+          "type": "string",
+          "description": "Default Jira project key (e.g. ENG)"
+        },
+        "pmAgent.azureDevOps.orgUrl": {
+          "type": "string",
+          "description": "Azure DevOps org URL (e.g. https://dev.azure.com/yourorg)"
+        },
+        "pmAgent.azureDevOps.project": {
+          "type": "string",
+          "description": "Azure DevOps project name"
+        },
+        "pmAgent.ai.provider": {
+          "type": "string",
+          "enum": [
+            "copilot",
+            "anthropic",
+            "openai",
+            "azure-openai",
+            "none"
+          ],
+          "default": "copilot",
+          "description": "AI provider for ticket enhancement. copilot = uses GitHub Copilot (no extra key needed)."
+        },
+        "pmAgent.ai.azureUrl": {
+          "type": "string",
+          "description": "Azure OpenAI full deployment endpoint URL"
+        },
+        "pmAgent.ai.model": {
+          "type": "string",
+          "description": "Override default AI model (optional)"
+        }
+      }
+    },
+    "icons": {},
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pm-agent-sidebar",
+          "title": "PM Agent",
+          "icon": "media/pm-agent-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "pm-agent-sidebar": [
+        {
+          "type": "webview",
+          "id": "pm-agent.workItemView",
+          "name": "Chat"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile && npm run inject-wizard",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "jest --verbose",
+    "package": "vsce package",
+    "inject-wizard": "node scripts/inject-wizard.js"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.26.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.4.0"
+  },
+  "author": {
+    "name": "Sebastian Hansen",
+    "url": "https://github.com/Data-Alchemy"
+  },
+  "homepage": "https://github.com/Data-Alchemy/copilot-pm-agent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Data-Alchemy/copilot-pm-agent"
+  },
+  "bugs": {
+    "url": "https://github.com/Data-Alchemy/copilot-pm-agent/issues"
+  },
+  "icon": "media/pm-agent-icon.png"
+}
