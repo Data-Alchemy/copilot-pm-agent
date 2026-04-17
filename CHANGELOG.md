@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.0.2] - 2026-04-17
+
+### Bug Fixes
+
+- correcting mapping allocation for migration commands, increased max return count for tickets during migration
+
 ## [1.0.1] - 2026-04-17
 
 ### Bug Fixes
