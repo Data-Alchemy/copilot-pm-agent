@@ -1071,7 +1071,7 @@ export class CommandRunner {
       { label: 'Priority',            description: '',                         field: 'priority',    picked: true  },
       { label: 'Labels / Tags',       description: '',                         field: 'labels',      picked: true  },
       { label: 'Assignee',            description: 'Matched by email',         field: 'assignee',    picked: false },
-      { label: 'Comments',            description: 'Copies up to 20',          field: 'comments',    picked: false },
+      { label: 'Comments',            description: 'Copies up to 20 per item', field: 'comments',    picked: true  },
       { label: 'Child Items',         description: 'Migrate subtasks/children and link to parent', field: 'children', picked: false },
     ].map(f => ({ ...f, alwaysShow: true })) as FQ[];
 
@@ -1104,20 +1104,27 @@ export class CommandRunner {
       return wi.rawTypeName ?? cap(wi.type);
     }))];
 
+    // Load stored type mappings as defaults
+    const storedMappings = this.credMgr.getTypeMappings();
+    const storedForDirection = storedMappings[direction] ?? {};
+
     const typeMap: Record<string, string> = {};
     for (const srcType of srcTypeNames) {
-      // Find the best default — exact match or first item
-      const exact = dstTypes.find(d => d.toLowerCase() === srcType.toLowerCase());
+      // Check stored mapping first, then auto-match by name
+      const stored = storedForDirection[srcType];
+      const exact = stored
+        ? dstTypes.find(d => d === stored)
+        : dstTypes.find(d => d.toLowerCase() === srcType.toLowerCase());
 
       // Build options with the best match pre-selected at top
       type TQ = vscode.QuickPickItem & { rawType: string };
       const typeOpts: TQ[] = dstTypes.map(t => ({
         label: t,
-        description: t.toLowerCase() === srcType.toLowerCase() ? '(auto-matched)' : '',
+        description: t === stored ? '(saved default)' : t.toLowerCase() === srcType.toLowerCase() ? '(auto-matched)' : '',
         rawType: t,
       }));
 
-      // Sort so the auto-match appears first
+      // Sort so the match appears first
       if (exact) {
         typeOpts.sort((a, b) => {
           if (a.rawType === exact) { return -1; }
@@ -1128,9 +1135,11 @@ export class CommandRunner {
 
       const picked = await vscode.window.showQuickPick<TQ>(typeOpts, {
         title: `Map "${srcType}" → ${dstName} type`,
-        placeHolder: exact
-          ? `"${srcType}" matched "${exact}" — press Enter to accept or pick a different type`
-          : `"${srcType}" has no match in ${dstName} — choose a type`,
+        placeHolder: stored
+          ? `Saved default: "${stored}" — press Enter to accept or pick a different type`
+          : exact
+            ? `"${srcType}" matched "${exact}" — press Enter to accept or pick a different type`
+            : `"${srcType}" has no match in ${dstName} — choose a type`,
         ignoreFocusOut: true
       });
       if (!picked) { return; }
@@ -1294,12 +1303,17 @@ export class CommandRunner {
         const childDesc = stripHtml(childFull.description ?? '');
         const childAc   = stripHtml((childFull as any).acceptanceCriteria ?? '');
 
-        // Map child type
+        // Map child type — for Jira destinations, prefer Sub-task to avoid hierarchy errors
         const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
         let childDstType = opts.typeMap[childSrcType];
         if (!childDstType) {
-          const match = opts.dstTypes.find(d => d.toLowerCase() === childSrcType.toLowerCase());
+          const match = opts.dstTypes.find((d: string) => d.toLowerCase() === childSrcType.toLowerCase());
           childDstType = match ?? 'Task';
+        }
+        // If destination is Jira and this is a child item, use Sub-task if available
+        if (opts.direction === 'ado-to-jira' || opts.direction === 'github-to-jira') {
+          const subTaskType = opts.dstTypes.find((d: string) => d.toLowerCase() === 'sub-task' || d.toLowerCase() === 'subtask');
+          if (subTaskType) { childDstType = subTaskType; }
         }
 
         let childDescFinal = opts.fields.has('description') ? childDesc : undefined;
@@ -1344,6 +1358,15 @@ export class CommandRunner {
         await opts.dstProvider.addComment(childDest.key,
           `Migrated from ${opts.srcName} — original: ${child.url}, parent: ${opts.parentDstKey}`
         ).catch(() => {});
+
+        // Copy comments if selected
+        if (opts.fields.has('comments') && childFull.comments?.length) {
+          for (const c of childFull.comments.slice(0, 20)) {
+            await opts.dstProvider.addComment(childDest.key,
+              `**From ${opts.srcName} (${c.author}):** ${c.body}`
+            ).catch(() => {});
+          }
+        }
 
         opts.createdKeys.push(
           `${indent}[${child.key}](${child.url}) -> [${childDest.key}](${childDest.url}) (child of ${opts.parentDstKey})`

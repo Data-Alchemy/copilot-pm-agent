@@ -18,6 +18,8 @@ export interface SetupResult {
   githubProjectNumber?: number;
   /** Per-issueType default values for custom/required fields */
   jiraFieldDefaults?: Record<string, Record<string, unknown>>;
+  /** Cross-platform type mappings: { "ado-to-jira": {"User Story":"Story"}, ... } */
+  typeMappings?: Record<string, Record<string, string>>;
 }
 
 const ALLOWED_URLS: Record<string, string> = {
@@ -143,6 +145,10 @@ export class SetupWizardPanel {
                 }
                 panel.webview.postMessage({ type: 'saveSuccess', platform: 'ado' });
               }
+              // Save type mappings (applies across all platforms)
+              if (data.typeMappings && Object.keys(data.typeMappings).length) {
+                await context.globalState.update('pmAgent.typeMappings', data.typeMappings);
+              }
             } catch (err) {
               panel.webview.postMessage({ type: 'saveError', error: err instanceof Error ? err.message : String(err) });
             }
@@ -229,6 +235,56 @@ export class SetupWizardPanel {
               } catch (err) {
                 panel.webview.postMessage({ type: 'tokenStatus', platform: 'github', valid: false, error: err instanceof Error ? err.message : String(err) });
               }
+            }
+            break;
+          }
+          case 'loadTypeMaps': {
+            // Fetch work item types from all configured platforms
+            try {
+              const cfg = vscode.workspace.getConfiguration('pmAgent');
+              const secrets = context.secrets;
+              const platformTypes: Record<string, string[]> = {};
+
+              // Jira
+              const jiraToken = await secrets.get('pmAgent.jira.apiToken');
+              const jiraBase = cfg.get<string>('jira.baseUrl');
+              const jiraEmail = cfg.get<string>('jira.email');
+              const jiraProj = cfg.get<string>('jira.defaultProject');
+              if (jiraToken && jiraBase && jiraEmail && jiraProj) {
+                try {
+                  const { JiraProvider } = await import('../providers/jiraProvider');
+                  const jp = new JiraProvider({ platform: 'jira', jiraBaseUrl: jiraBase, jiraEmail, jiraToken, jiraProject: jiraProj });
+                  platformTypes['jira'] = await jp.getWorkItemTypes();
+                } catch { /* skip */ }
+              }
+
+              // ADO
+              const adoToken = await secrets.get('pmAgent.ado.personalAccessToken');
+              const adoOrg = cfg.get<string>('azureDevOps.orgUrl');
+              const adoProj = cfg.get<string>('azureDevOps.project');
+              if (adoToken && adoOrg && adoProj) {
+                try {
+                  const { AdoProvider } = await import('../providers/adoProvider');
+                  const ap = new AdoProvider({ platform: 'azuredevops', adoOrgUrl: adoOrg, adoProject: adoProj, adoToken });
+                  platformTypes['ado'] = await ap.getWorkItemTypes();
+                } catch { /* skip */ }
+              }
+
+              // GitHub
+              const ghToken = await secrets.get('pmAgent.github.personalAccessToken');
+              const ghOwner = cfg.get<string>('github.owner');
+              const ghRepo = cfg.get<string>('github.repo');
+              if (ghToken && ghOwner && ghRepo) {
+                try {
+                  const { GitHubProvider } = await import('../providers/githubProvider');
+                  const gp = new GitHubProvider({ platform: 'github', githubOwner: ghOwner, githubRepo: ghRepo, githubToken: ghToken });
+                  platformTypes['github'] = await gp.getWorkItemTypes();
+                } catch { /* skip */ }
+              }
+
+              panel.webview.postMessage({ type: 'typeMaps', platformTypes });
+            } catch (err) {
+              panel.webview.postMessage({ type: 'typeMapsError', error: err instanceof Error ? err.message : String(err) });
             }
             break;
           }
@@ -503,15 +559,23 @@ function getBody(): string {
     '<div class="section" id="section-github">',
     '  <div class="info-box">',
     '    <strong>Required:</strong> Owner (org or user) &middot; Repository &middot; Personal Access Token<br>',
-    '    Create a PAT at <a href="#" id="gh-token-link">github.com/settings/tokens</a> with <strong>repo</strong> and <strong>project</strong> scopes.',
+    '    Create a PAT at <a href="#" id="gh-token-link">github.com/settings/tokens</a>.<br>Classic PAT: <strong>repo</strong>, <strong>project</strong>, <strong>read:org</strong> scopes.<br>Fine-grained: Issues (RW), Projects (RW), Metadata (R), Org Members (R).',
     '  </div>',
     '  <div class="field"><label>Owner</label><input type="text" id="gh-owner" placeholder="your-org or your-username" autocomplete="off" spellcheck="false"/><div class="hint">GitHub organisation or personal account</div></div>',
     '  <div class="field"><label>Repository</label><input type="text" id="gh-repo" placeholder="my-repo" autocomplete="off" spellcheck="false"/><div class="hint">Repository where issues are created</div></div>',
-    '  <div class="field"><label>Personal Access Token</label><div class="input-row"><input type="password" id="gh-token" placeholder="ghp_xxxxxxxxxxxx" autocomplete="new-password"/><button class="btn btn-outline" id="gh-gen-btn">Generate token</button><button class="btn btn-secondary" id="gh-validate-btn" style="margin-left:4px">Validate</button></div><div id="github-token-status" style="font-size:11px;margin-top:4px;min-height:16px"></div><div class="hint">Needs repo + project scopes. Classic or fine-grained PAT.</div></div>',
+    '  <div class="field"><label>Personal Access Token</label><div class="input-row"><input type="password" id="gh-token" placeholder="ghp_xxxxxxxxxxxx" autocomplete="new-password"/><button class="btn btn-outline" id="gh-gen-btn">Generate token</button><button class="btn btn-secondary" id="gh-validate-btn" style="margin-left:4px">Validate</button></div><div id="github-token-status" style="font-size:11px;margin-top:4px;min-height:16px"></div><div class="hint">Classic: repo + project + read:org. Fine-grained: Issues, Projects, Metadata, Org Members.</div></div>',
     '  <div class="field"><label>Project Number (optional)</label><input type="number" id="gh-project-num" placeholder="e.g. 1" autocomplete="off"/><div class="hint">GitHub Projects v2 number. Find it in your project URL: github.com/orgs/ORG/projects/<strong>NUMBER</strong></div></div>',
     '  <div class="field"><button class="btn btn-secondary" id="gh-fetch-btn">Load Projects</button><div class="project-status" id="github-project-status"></div><div id="gh-project-list" style="display:none;margin-top:6px;max-height:200px;overflow-y:auto;border:1px solid var(--vscode-input-border);border-radius:3px;background:var(--vscode-input-background)"></div></div>',
     '</div>',
     '',
+    '<hr>',
+    '<div style="margin-top:16px">',
+    '  <label style="display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--vscode-descriptionForeground);margin-bottom:8px">Type Mapping (Migration)</label>',
+    '  <div class="hint" style="margin-bottom:8px">Define how work item types map between platforms when migrating. Click Load to scan types from configured platforms.</div>',
+    '  <button class="btn btn-secondary" id="load-type-maps-btn">Load Types</button>',
+    '  <div class="project-status" id="typemap-status"></div>',
+    '  <div id="typemap-container" style="margin-top:8px"></div>',
+    '</div>',
     '<hr>',
     '<div class="footer">',
     '  <button class="btn btn-primary" id="save-btn">Save and Connect</button>',
@@ -544,6 +608,7 @@ function getScript(safeJson: string): string {
     'document.getElementById("gh-token-link").addEventListener("click", function(e){ e.preventDefault(); vscode.postMessage({type:"openUrl",url:"githubTokenPage"}); });',
     'document.getElementById("gh-validate-btn").addEventListener("click", function(){ validateToken("github"); });',
     'document.getElementById("gh-fetch-btn").addEventListener("click", function(){ fetchGithubProjects(); });',
+    'document.getElementById("load-type-maps-btn").addEventListener("click", function(){ vscode.postMessage({type:"loadTypeMaps"}); });',
     '',
     '// Clear on input change',
     'document.getElementById("jira-url").addEventListener("input", function(){ clearJiraProjects(); });',
@@ -726,6 +791,83 @@ function getScript(safeJson: string): string {
     '  return defaults;',
     '}',
     '',
+    '// ── Type mapping ──',
+    'var _typeMappings = pre.typeMappings || {};',
+    '',
+    'function renderTypeMaps(platformTypes){',
+    '  var container = document.getElementById("typemap-container");',
+    '  container.innerHTML = "";',
+    '  var platforms = Object.keys(platformTypes);',
+    '  if(platforms.length < 2){ setStatus("typemap","","Configure at least 2 platforms to set up type mappings."); return; }',
+    '  var pairs = [];',
+    '  for(var a=0;a<platforms.length;a++){',
+    '    for(var b=0;b<platforms.length;b++){',
+    '      if(a!==b) pairs.push({src:platforms[a], dst:platforms[b]});',
+    '    }',
+    '  }',
+    '  var count = 0;',
+    '  pairs.forEach(function(pair){',
+    '    var key = pair.src + "-to-" + pair.dst;',
+    '    var srcTypes = platformTypes[pair.src] || [];',
+    '    var dstTypes = platformTypes[pair.dst] || [];',
+    '    if(!srcTypes.length || !dstTypes.length) return;',
+    '    var saved = _typeMappings[key] || {};',
+    '    var group = document.createElement("div");',
+    '    group.style.cssText = "margin-bottom:10px;border:1px solid var(--vscode-panel-border,#3c3c3c);border-radius:4px;padding:10px;";',
+    '    var title = document.createElement("div");',
+    '    title.style.cssText = "font-weight:600;font-size:12px;margin-bottom:8px;";',
+    '    var labels = {jira:"Jira",ado:"Azure DevOps",github:"GitHub"};',
+    '    title.textContent = (labels[pair.src]||pair.src) + " \\u2192 " + (labels[pair.dst]||pair.dst);',
+    '    group.appendChild(title);',
+    '    srcTypes.forEach(function(srcType){',
+    '      var row = document.createElement("div");',
+    '      row.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:4px;";',
+    '      var lbl = document.createElement("span");',
+    '      lbl.style.cssText = "font-size:11px;min-width:120px;color:var(--vscode-descriptionForeground);";',
+    '      lbl.textContent = srcType;',
+    '      row.appendChild(lbl);',
+    '      var arrow = document.createElement("span");',
+    '      arrow.textContent = "\\u2192";',
+    '      arrow.style.cssText = "font-size:11px;color:var(--vscode-descriptionForeground);";',
+    '      row.appendChild(arrow);',
+    '      var sel = document.createElement("select");',
+    '      sel.setAttribute("data-mapkey", key);',
+    '      sel.setAttribute("data-srctype", srcType);',
+    '      sel.style.cssText = "flex:1;padding:3px 6px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,#555);border-radius:3px;font-size:11px;";',
+    '      var def = document.createElement("option");',
+    '      def.value = ""; def.textContent = "-- auto --";',
+    '      sel.appendChild(def);',
+    '      dstTypes.forEach(function(dstType){',
+    '        var opt = document.createElement("option");',
+    '        opt.value = dstType; opt.textContent = dstType;',
+    '        if(saved[srcType] === dstType) opt.selected = true;',
+    '        else if(!saved[srcType] && dstType.toLowerCase() === srcType.toLowerCase()) opt.selected = true;',
+    '        sel.appendChild(opt);',
+    '      });',
+    '      row.appendChild(sel);',
+    '      group.appendChild(row);',
+    '      count++;',
+    '    });',
+    '    container.appendChild(group);',
+    '  });',
+    '  setStatus("typemap","ok",count+" type mapping"+(count!==1?"s":"")+" configured. Save to persist.");',
+    '}',
+    '',
+    'function collectTypeMappings(){',
+    '  var mappings = {};',
+    '  var selects = document.querySelectorAll("#typemap-container [data-mapkey]");',
+    '  selects.forEach(function(sel){',
+    '    var key = sel.getAttribute("data-mapkey");',
+    '    var srcType = sel.getAttribute("data-srctype");',
+    '    var val = sel.value;',
+    '    if(val){',
+    '      if(!mappings[key]) mappings[key] = {};',
+    '      mappings[key][srcType] = val;',
+    '    }',
+    '  });',
+    '  return mappings;',
+    '}',
+    '',
     'function onMessage(e){',
     '  var msg=e.data;',
     '  if(msg.type==="adoProjects"){ var sel=document.getElementById("ado-project"); sel.innerHTML=\'<option value="">\\u2014 Select a project \\u2014</option>\'; msg.projects.forEach(function(p){var opt=document.createElement("option");opt.value=opt.textContent=p.name;sel.appendChild(opt);}); sel.style.display="block"; setStatus("ado","ok",msg.projects.length+" project"+(msg.projects.length!==1?"s":"")+" loaded."); document.getElementById("ado-fetch-btn").disabled=false; }',
@@ -752,6 +894,8 @@ function getScript(safeJson: string): string {
     '    }',
     '  }',
     '  if(msg.type==="githubProjectsError"){ setStatus("github","error","Could not load projects: "+msg.error); }',
+    '  if(msg.type==="typeMaps"){ renderTypeMaps(msg.platformTypes); }',
+    '  if(msg.type==="typeMapsError"){ setStatus("typemap","error","Could not load types: "+msg.error); }',
     '  if(msg.type==="saveSuccess"){ setStatus(msg.platform,"ok","Saved successfully. You can switch tabs to configure the other platform."); document.getElementById("save-btn").textContent="Save and Connect"; _lastSaved=msg.platform; }',
     '  if(msg.type==="saveError"){ setStatus(activeTab(),"error","Save failed: "+msg.error); }',
     '  if(msg.type==="tokenStatus"){',
@@ -812,7 +956,7 @@ function getScript(safeJson: string): string {
     '    if(!baseUrl){alert("Enter your Jira Base URL.");return;}',
     '    if(!email){alert("Enter your Jira account email.");return;}',
     '    if(!token&&jtEl.dataset.hasStored!=="1"){alert("Enter your Jira API token.");return;}',
-    '    vscode.postMessage({type:"save",data:{platform:"jira",jiraBaseUrl:baseUrl,jiraEmail:email,jiraToken:token,jiraProject:project,jiraFieldDefaults:collectJiraFieldDefaults()}});',
+    '    vscode.postMessage({type:"save",data:{platform:"jira",jiraBaseUrl:baseUrl,jiraEmail:email,jiraToken:token,jiraProject:project,jiraFieldDefaults:collectJiraFieldDefaults(),typeMappings:collectTypeMappings()}});',
     '  } else if(tab==="github"){',
     '    var ghOwner=document.getElementById("gh-owner").value.trim();',
     '    var ghRepo=document.getElementById("gh-repo").value.trim();',
@@ -822,7 +966,7 @@ function getScript(safeJson: string): string {
     '    if(!ghOwner){alert("Enter the GitHub owner.");return;}',
     '    if(!ghRepo){alert("Enter the repository name.");return;}',
     '    if(!ghToken&&gtEl.dataset.hasStored!=="1"){alert("Enter your GitHub PAT.");return;}',
-    '    vscode.postMessage({type:"save",data:{platform:"github",githubOwner:ghOwner,githubRepo:ghRepo,githubToken:ghToken,githubProjectNumber:ghProjNum?Number(ghProjNum):undefined}});',
+    '    vscode.postMessage({type:"save",data:{platform:"github",githubOwner:ghOwner,githubRepo:ghRepo,githubToken:ghToken,githubProjectNumber:ghProjNum?Number(ghProjNum):undefined,typeMappings:collectTypeMappings()}});',
     '  } else {',
     '    var orgUrl=document.getElementById("ado-org").value.trim();',
     '    var atEl=document.getElementById("ado-token");',
@@ -831,7 +975,7 @@ function getScript(safeJson: string): string {
     '    if(!orgUrl){alert("Enter your Azure DevOps Organisation URL.");return;}',
     '    if(!token2&&atEl.dataset.hasStored!=="1"){alert("Enter your Personal Access Token.");return;}',
     '    if(!project2){alert("Load and select a project first.");return;}',
-    '    vscode.postMessage({type:"save",data:{platform:"azuredevops",adoOrgUrl:orgUrl,adoToken:token2,adoProject:project2}});',
+    '    vscode.postMessage({type:"save",data:{platform:"azuredevops",adoOrgUrl:orgUrl,adoToken:token2,adoProject:project2,typeMappings:collectTypeMappings()}});',
     '  }',
     '}',
   ].join('\n');

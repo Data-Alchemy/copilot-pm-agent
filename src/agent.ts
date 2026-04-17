@@ -2180,7 +2180,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  { label: 'Priority',             description: 'Critical / High / Medium / Low',field: 'priority',    picked: true  },
  { label: 'Assignee',             description: 'Will try to match by email',    field: 'assignee',    picked: false },
  { label: 'Labels / Tags',        description: 'Copied as-is',                 field: 'labels',      picked: true  },
- { label: 'Comments',             description: 'Copies up to 20 comments',      field: 'comments',    picked: false },
+ { label: 'Comments',             description: 'Copies up to 20 per item',     field: 'comments',    picked: true  },
  { label: 'Child Items',          description: 'Migrate subtasks/children and link to parent', field: 'children', picked: false },
  ];
 
@@ -2345,8 +2345,13 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
        const cSrcType = cf.rawTypeName ?? cap(cf.type);
        let cDstType = typeMap[cSrcType];
        if (!cDstType) {
-         const match = dstTypes.find(d => d.toLowerCase() === cSrcType.toLowerCase());
+         const match = dstTypes.find((d: string) => d.toLowerCase() === cSrcType.toLowerCase());
          cDstType = match ?? 'Task';
+       }
+       // For Jira destinations, use Sub-task for children to respect hierarchy
+       if (destName.toLowerCase().includes('jira')) {
+         const subTask = dstTypes.find((d: string) => d.toLowerCase() === 'sub-task' || d.toLowerCase() === 'subtask');
+         if (subTask) { cDstType = subTask; }
        }
        let cDescF = fields.has('description') ? cDesc : undefined;
        if (!cDescF && direction === 'jira-to-ado') { cDescF = cf.title; }
@@ -2383,6 +2388,15 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
        await destProvider.addComment(cDest.key,
          `Migrated from ${sourceName} â€” original: ${child.url}, parent: ${parentDstKey}`
        ).catch(() => {});
+
+       // Copy comments if selected
+       if (fields.has('comments') && cf.comments?.length) {
+         for (const cm of cf.comments.slice(0, 20)) {
+           await destProvider.addComment(cDest.key,
+             `**From ${sourceName} (${cm.author}):** ${cm.body}`
+           ).catch(() => {});
+         }
+       }
 
        // Recurse
        const grandchildren = await migrateChildrenRec(cf.id ?? child.key, cDest.key ?? cDest.id, cDest.key, depth + 1);

@@ -217,11 +217,42 @@ export class JiraProvider {
     // which bypasses Jira's create-screen field restrictions entirely.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let created: any;
+    let parentLinkDeferred = false;
     try {
       created = await this.http<any>('/issue', { method: 'POST', body: JSON.stringify({ fields }) });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('400')) {
+
+      // Hierarchy error — the issue type can't be a child of the parent
+      if (msg.includes('hierarchy') || msg.includes('parentId') || msg.includes('parent')) {
+        // Strategy 1: Retry as Sub-task with parent
+        if (fields.parent && fields.issuetype?.name !== 'Sub-task') {
+          try {
+            const subFields = { ...fields, issuetype: { name: 'Sub-task' } };
+            created = await this.http<any>('/issue', { method: 'POST', body: JSON.stringify({ fields: subFields }) });
+          } catch {
+            // Strategy 2: Create without parent, link after
+            const noParentFields = { ...fields };
+            delete noParentFields.parent;
+            parentLinkDeferred = true;
+            try {
+              created = await this.http<any>('/issue', { method: 'POST', body: JSON.stringify({ fields: noParentFields }) });
+            } catch (innerErr) {
+              // Strategy 3: Create as Sub-task without parent
+              const subNoParent = { ...fields, issuetype: { name: 'Sub-task' } };
+              delete subNoParent.parent;
+              parentLinkDeferred = true;
+              created = await this.http<any>('/issue', { method: 'POST', body: JSON.stringify({ fields: subNoParent }) });
+            }
+          }
+        } else {
+          // Already Sub-task but still fails — create without parent
+          const noParent = { ...fields };
+          delete noParent.parent;
+          parentLinkDeferred = true;
+          created = await this.http<any>('/issue', { method: 'POST', body: JSON.stringify({ fields: noParent }) });
+        }
+      } else if (msg.includes('400')) {
         // Strip the specific bad field and retry
         const stripped: any = { ...fields };
         const fm = msg.match(/'([^']+)'|"([^"]+)"/);
@@ -233,6 +264,13 @@ export class JiraProvider {
       } else {
         throw err;
       }
+    }
+
+    // If parent link was deferred (hierarchy issue), try to link after creation
+    if (parentLinkDeferred && input.parentId && created?.key) {
+      try {
+        await this.addParentLink(created.key, input.parentId);
+      } catch { /* parent link best-effort — issueLink fallback inside addParentLink */ }
     }
 
     // ── Post-create: set custom fields via the edit screen ──────────────────

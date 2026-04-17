@@ -79,6 +79,15 @@ export class CredentialManager {
    return this.context.globalState.get<Record<string, Record<string, unknown>>>('pmAgent.jiraFieldDefaults') ?? {};
  }
 
+ /** Get stored type mappings: { "ado-to-jira": { "User Story": "Story", "Task": "Task" }, "jira-to-ado": {...} } */
+ getTypeMappings(): Record<string, Record<string, string>> {
+   return this.context.globalState.get<Record<string, Record<string, string>>>('pmAgent.typeMappings') ?? {};
+ }
+
+ async setTypeMappings(mappings: Record<string, Record<string, string>>): Promise<void> {
+   await this.context.globalState.update('pmAgent.typeMappings', mappings);
+ }
+
  async storeGithubToken(token: string): Promise<void> {
  await this.secrets.store(GITHUB_TOKEN_KEY, token);
  }
@@ -246,6 +255,7 @@ export class CredentialManager {
    githubRepo: config.get<string>('github.repo') || '',
    githubProjectNumber: config.get<number>('github.projectNumber') || '',
    jiraFieldDefaults: this.getJiraFieldDefaults(),
+   typeMappings: this.getTypeMappings(),
  };
 
  // Pass boolean flags so the wizard knows tokens exist (shows sentinel)
