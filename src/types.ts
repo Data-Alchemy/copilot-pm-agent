@@ -66,6 +66,7 @@ export interface CreateWorkItemInput {
   labels?:      string[];
   sprintId?:    string;
   parentId?:    string;        // parent work item key or ID
+  customFields?: Record<string, unknown>; // extra fields (Jira required custom fields)
 }
 
 export interface UpdateWorkItemInput {

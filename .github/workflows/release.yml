@@ -59,6 +59,7 @@ jobs:
           fi
 
           COMMITS=$(git log $RANGE --pretty=format:"%s" 2>/dev/null)
+          export COMMITS
           if [ -z "$COMMITS" ]; then
             echo "No commits since last tag"
             echo "should_release=false" >> "$GITHUB_OUTPUT"
@@ -104,34 +105,83 @@ jobs:
           done
 
           echo "$BUMP: $CURRENT -> $VERSION"
+          export VERSION
 
-          # Build categorized release notes from commit messages
-          FEATURES=""
-          FIXES=""
-          OTHER=""
+          # Build release notes and changelog entry using node for better parsing
+          node -e "
+            const commits = process.env.COMMITS.split('\n').filter(Boolean);
+            const version = process.env.VERSION;
 
-          while IFS= read -r line; do
-            # Strip the prefix to get the human-readable message
-            CLEANED=$(echo "$line" | sed 's/^[a-zA-Z]*([^)]*): //; s/^[a-zA-Z]*: //')
-            if echo "$line" | grep -qiE "^feat(\(.+\))?:"; then
-              FEATURES="${FEATURES}- ${CLEANED}\n"
-            elif echo "$line" | grep -qiE "^fix(\(.+\))?:"; then
-              FIXES="${FIXES}- ${CLEANED}\n"
-            elif echo "$line" | grep -qiE "^(perf|refactor|build|ci|docs|style|test|chore)(\(.+\))?:"; then
-              OTHER="${OTHER}- ${CLEANED}\n"
-            else
-              OTHER="${OTHER}- ${line}\n"
-            fi
-          done <<< "$COMMITS"
+            const categories = {
+              breaking: { title: 'Breaking Changes', items: [] },
+              feat:     { title: 'Features', items: [] },
+              fix:      { title: 'Bug Fixes', items: [] },
+              perf:     { title: 'Performance', items: [] },
+              refactor: { title: 'Refactoring', items: [] },
+              docs:     { title: 'Documentation', items: [] },
+              ci:       { title: 'CI/CD', items: [] },
+              other:    { title: 'Other Changes', items: [] },
+            };
 
-          NOTES=""
-          [ -n "$FEATURES" ] && NOTES="${NOTES}### Features\n\n${FEATURES}\n"
-          [ -n "$FIXES" ] && NOTES="${NOTES}### Bug Fixes\n\n${FIXES}\n"
-          [ -n "$OTHER" ] && NOTES="${NOTES}### Other Changes\n\n${OTHER}\n"
+            const seen = new Set();
+            for (const raw of commits) {
+              // Skip duplicates and release commits
+              const key = raw.toLowerCase().trim();
+              if (seen.has(key) || key.startsWith('release:') || key.includes('[skip ci]')) continue;
+              seen.add(key);
 
-          # Write to files for later steps
-          printf "%b" "$NOTES" > /tmp/release_notes.md
-          printf "%b" "$NOTES" > /tmp/changelog_entry.md
+              // Parse: type(scope)!: message
+              const m = raw.match(/^(\w+)(?:\(([^)]+)\))?(!)?\s*:\s*(.+)/);
+              if (!m) {
+                categories.other.items.push({ scope: '', msg: raw });
+                continue;
+              }
+              const [, type, scope, bang, msg] = m;
+
+              // Breaking change
+              if (bang) {
+                categories.breaking.items.push({ scope: scope || '', msg });
+              }
+
+              const t = type.toLowerCase();
+              if (t === 'feat')          categories.feat.items.push({ scope: scope || '', msg });
+              else if (t === 'fix')      categories.fix.items.push({ scope: scope || '', msg });
+              else if (t === 'perf')     categories.perf.items.push({ scope: scope || '', msg });
+              else if (t === 'refactor') categories.refactor.items.push({ scope: scope || '', msg });
+              else if (t === 'docs')     categories.docs.items.push({ scope: scope || '', msg });
+              else if (t === 'ci' || t === 'build') categories.ci.items.push({ scope: scope || '', msg });
+              else if (t === 'chore' || t === 'style' || t === 'test')
+                categories.other.items.push({ scope: scope || '', msg });
+            }
+
+            // Format
+            let notes = '';
+            let changelog = '';
+            for (const cat of Object.values(categories)) {
+              if (!cat.items.length) continue;
+              const section = '### ' + cat.title + '\n\n' +
+                cat.items.map(i => '- ' + (i.scope ? '**' + i.scope + ':** ' : '') + i.msg).join('\n') +
+                '\n\n';
+              notes += section;
+              changelog += section;
+            }
+
+            if (!notes.trim()) {
+              notes = 'Maintenance release.\n';
+              changelog = 'Maintenance release.\n';
+            }
+
+            require('fs').writeFileSync('/tmp/release_notes.md', notes);
+            require('fs').writeFileSync('/tmp/changelog_entry.md', changelog);
+            console.log(notes);
+          " 2>&1 || echo "Note generation failed — using fallback"
+
+          # Fallback if node script fails
+          if [ ! -f /tmp/release_notes.md ]; then
+            echo "### Changes" > /tmp/release_notes.md
+            echo "$COMMITS" | while IFS= read -r line; do echo "- $line" >> /tmp/release_notes.md; done
+            cp /tmp/release_notes.md /tmp/changelog_entry.md
+          fi
 
           echo "Release notes:"
           cat /tmp/release_notes.md

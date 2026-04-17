@@ -172,7 +172,11 @@ export class JiraProvider {
 
   // ── Create / Update ───────────────────────────────────────────────────────
 
-  async createWorkItem(input: CreateWorkItemInput & { acceptanceCriteria?: string; parentId?: string }): Promise<WorkItem> {
+  async createWorkItem(input: CreateWorkItemInput & {
+    acceptanceCriteria?: string;
+    parentId?: string;
+    customFields?: Record<string, unknown>;
+  }): Promise<WorkItem> {
     if (!this.defaultProject) { throw new Error('No default Jira project configured. Run @pm /setupai to set one.'); }
     const typeMap: Record<WorkItemType,string> = {
       story:'Story', task:'Task', bug:'Bug', epic:'Epic',
@@ -197,6 +201,15 @@ export class JiraProvider {
 
     if (input.description) {
       fields.description = toAdf(input.description);
+    }
+
+    // Merge any custom field defaults (from Configure Platform or AI suggestions)
+    if (input.customFields) {
+      for (const [k, v] of Object.entries(input.customFields)) {
+        if (v !== undefined && v !== null && v !== '') {
+          fields[k] = v;
+        }
+      }
     }
 
     // Create with safe fields only — custom fields (story points, sprint, assignee,
@@ -686,20 +699,115 @@ export class JiraProvider {
       const key = this.defaultProject;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const r = await this.http<any>(`/project/${encodeURIComponent(key)}/statuses`);
-      // /project/:key/statuses groups by issuetype
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const types = (r ?? []).map((t: any) => String(t.name ?? '')).filter(Boolean);
       return ([...new Set(types)] as string[]).sort();
     } catch {
-      // Fallback: use the global issuetypes endpoint
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const r = await this.http<any[]>('/issuetype');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return ((r ?? []) as any[]).map((t: any) => String(t.name ?? '')).filter(Boolean).sort() as string[];
       } catch {
         return ['Story', 'Task', 'Bug', 'Epic', 'Sub-task'];
       }
+    }
+  }
+
+  /**
+   * Fetch all fields on the create screen for a given issue type in the current project.
+   * Returns each field's key, name, whether it's required, its type, and allowed values.
+   * Skips fields already handled by the standard create flow.
+   */
+  async getCreateFields(issueTypeName: string): Promise<Array<{
+    key: string;
+    name: string;
+    required: boolean;
+    type: 'string' | 'number' | 'option' | 'array' | 'user' | 'date' | 'any';
+    allowedValues?: Array<{ id: string; value: string }>;
+  }>> {
+    const project = this.defaultProject;
+    // Fields already handled by our standard create flow
+    const skip = new Set([
+      'summary', 'issuetype', 'project', 'description', 'priority',
+      'labels', 'parent', 'assignee', 'reporter', 'attachment',
+      'customfield_10016', 'customfield_10028', 'customfield_10014', 'story_points',
+      'customfield_10020', // sprint
+    ]);
+
+    try {
+      // Resolve issue type name → id
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allTypes = await this.http<any[]>('/issuetype');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const typeObj = (allTypes ?? []).find((t: any) => t.name?.toLowerCase() === issueTypeName.toLowerCase());
+      if (!typeObj) { return []; }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let fieldEntries: Array<{ key: string; field: any }> = [];
+
+      // Try new createmeta endpoint (Jira Cloud)
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const meta = await this.http<any>(
+          `/issue/createmeta/${encodeURIComponent(project)}/issuetypes/${typeObj.id}`
+        );
+        const vals = meta?.values ?? [];
+        fieldEntries = vals.map((v: any) => ({ key: v.fieldId ?? '', field: v }));
+      } catch {
+        // Fallback: old createmeta with expand (Jira Server / older Cloud)
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const meta = await this.http<any>(
+            `/issue/createmeta?projectKeys=${encodeURIComponent(project)}&issuetypeIds=${typeObj.id}&expand=projects.issuetypes.fields`
+          );
+          const fields = meta?.projects?.[0]?.issuetypes?.[0]?.fields ?? {};
+          fieldEntries = Object.entries(fields).map(([k, v]: [string, any]) => ({ key: k, field: v }));
+        } catch { return []; }
+      }
+
+      const result: Array<{
+        key: string; name: string; required: boolean;
+        type: 'string' | 'number' | 'option' | 'array' | 'user' | 'date' | 'any';
+        allowedValues?: Array<{ id: string; value: string }>;
+      }> = [];
+
+      for (const { key, field } of fieldEntries) {
+        if (!key || skip.has(key)) { continue; }
+
+        const schema = field.schema ?? {};
+        let type: 'string' | 'number' | 'option' | 'array' | 'user' | 'date' | 'any' = 'string';
+        if (schema.type === 'number')   { type = 'number'; }
+        else if (schema.type === 'option' || schema.custom?.includes('select') || field.allowedValues?.length) { type = 'option'; }
+        else if (schema.type === 'array' && schema.items === 'option') { type = 'array'; }
+        else if (schema.type === 'array') { type = 'array'; }
+        else if (schema.type === 'user')  { type = 'user'; }
+        else if (schema.type === 'date' || schema.type === 'datetime') { type = 'date'; }
+
+        let allowedValues: Array<{ id: string; value: string }> | undefined;
+        if (field.allowedValues?.length) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          allowedValues = field.allowedValues.map((v: any) => ({
+            id:    String(v.id ?? v.value ?? ''),
+            value: String(v.value ?? v.name ?? v.label ?? v.id ?? '')
+          }));
+        }
+
+        result.push({
+          key,
+          name:     field.name ?? key,
+          required: !!field.required,
+          type,
+          allowedValues,
+        });
+      }
+
+      // Sort: required first, then alphabetical
+      result.sort((a, b) => {
+        if (a.required !== b.required) { return a.required ? -1 : 1; }
+        return a.name.localeCompare(b.name);
+      });
+
+      return result;
+    } catch {
+      return [];
     }
   }
 

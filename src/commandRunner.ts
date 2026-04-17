@@ -782,6 +782,24 @@ export class CommandRunner {
     if (!confirm || confirm.value === 'no') { return; }
 
     // ── 10. Create ────────────────────────────────────────────────────────
+    // Load stored field defaults for this issue type (Jira only)
+    let customFields: Record<string, unknown> | undefined;
+    if (platform === 'jira' && rawTypeName) {
+      const allDefaults = this.credMgr.getJiraFieldDefaults();
+      const typeDefaults = allDefaults[rawTypeName];
+      if (typeDefaults && Object.keys(typeDefaults).length) {
+        // Convert option values from {id, value} to the Jira API format {id}
+        customFields = {};
+        for (const [k, v] of Object.entries(typeDefaults)) {
+          if (v && typeof v === 'object' && 'id' in (v as any)) {
+            customFields[k] = { id: (v as any).id };
+          } else {
+            customFields[k] = v;
+          }
+        }
+      }
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const created: import('./types').WorkItem = await (provider as any).createWorkItem({
@@ -793,7 +811,8 @@ export class CommandRunner {
       priority,
       assigneeId,
       sprintId:           platform === 'azuredevops' ? iterationPath : sprintId,
-      rawTypeName
+      rawTypeName,
+      customFields
     });
     void vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Creating…` }, () => Promise.resolve());
 
@@ -973,10 +992,28 @@ export class CommandRunner {
       ? { maxResults: 200 }
       : { assigneeId: du?.id ?? '@me', maxResults: 100 };
 
-    const srcItems = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Loading ${srcName} items...` },
-      () => srcProvider.searchWorkItems(searchQuery)
-    ).then(v => v, () => [] as import('./types').WorkItem[]);
+    let srcItems: import('./types').WorkItem[] = [];
+    try {
+      srcItems = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Loading ${srcName} items...` },
+        () => srcProvider.searchWorkItems(searchQuery)
+      );
+    } catch (loadErr) {
+      const errMsg = loadErr instanceof Error ? loadErr.message : String(loadErr);
+      const isAuth = errMsg.includes('401') || errMsg.includes('403') || errMsg.includes('Unauthorized');
+      if (isAuth) {
+        const action = await vscode.window.showErrorMessage(
+          `${srcName} authentication failed — your API token may be expired or invalid.`,
+          'Configure Platform'
+        );
+        if (action === 'Configure Platform') {
+          await vscode.commands.executeCommand('pm-agent.configurePlatform');
+        }
+      } else {
+        vscode.window.showErrorMessage(`Failed to load items from ${srcName}: ${errMsg}`);
+      }
+      return;
+    }
 
     if (!srcItems.length) {
       vscode.window.showErrorMessage(`No items found in ${srcName}.`);

@@ -61,6 +61,11 @@ export class CredentialManager {
  await this.secrets.store(JIRA_TOKEN_KEY, token);
  }
 
+ /** Get stored Jira field defaults (per-issueType) */
+ getJiraFieldDefaults(): Record<string, Record<string, unknown>> {
+   return this.context.globalState.get<Record<string, Record<string, unknown>>>('pmAgent.jiraFieldDefaults') ?? {};
+ }
+
  async storeAdoToken(token: string): Promise<void> {
  await this.secrets.store(ADO_TOKEN_KEY, token);
  }
@@ -219,6 +224,7 @@ export class CredentialManager {
    jiraProject: config.get<string>('jira.defaultProject') || '',
    adoOrgUrl: config.get<string>('azureDevOps.orgUrl') || '',
    adoProject: config.get<string>('azureDevOps.project') || '',
+   jiraFieldDefaults: this.getJiraFieldDefaults(),
  };
 
  // Pass boolean flags so the wizard knows tokens exist (shows sentinel)
@@ -227,27 +233,8 @@ export class CredentialManager {
  if (storedAdoToken)  { existing._hasAdoToken  = true; }
 
  const result = await SetupWizardPanel.show(this.context, existing);
- if (!result) { return false; }
-
- if (result.platform === 'jira') {
- await config.update('platform', 'jira', vscode.ConfigurationTarget.Global);
- await config.update('jira.baseUrl', result.jiraBaseUrl!, vscode.ConfigurationTarget.Global);
- await config.update('jira.email', result.jiraEmail!, vscode.ConfigurationTarget.Global);
- await config.update('jira.defaultProject', result.jiraProject || '', vscode.ConfigurationTarget.Global);
- if (result.jiraToken) { await this.storeJiraToken(result.jiraToken); }
- vscode.window.showInformationMessage(
- `Connected to Jira${result.jiraProject ? ' — project: ' + result.jiraProject : ''}. Say @pm in Copilot chat!`
- );
- } else {
- await config.update('platform', 'azuredevops', vscode.ConfigurationTarget.Global);
- await config.update('azureDevOps.orgUrl', result.adoOrgUrl!, vscode.ConfigurationTarget.Global);
- await config.update('azureDevOps.project', result.adoProject!, vscode.ConfigurationTarget.Global);
- if (result.adoToken) { await this.storeAdoToken(result.adoToken); }
- vscode.window.showInformationMessage(
- `Connected to Azure DevOps — project: ${result.adoProject}. Say @pm in Copilot chat!`
- );
- }
-
- return true;
+ // Save is now handled inside the panel via postMessage.
+ // result is the last saved platform name or undefined if cancelled.
+ return !!result;
  }
 }

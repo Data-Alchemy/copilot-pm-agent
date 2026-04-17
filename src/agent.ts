@@ -1045,6 +1045,24 @@ export class PmAgent {
  }
 
  stream.progress('Creating story...');
+
+ // Load stored field defaults for this issue type (Jira only)
+ let customFields: Record<string, unknown> | undefined;
+ if (platform === 'jira' && rawTypeName) {
+ const allDefaults = this.credMgr.getJiraFieldDefaults();
+ const typeDefaults = allDefaults[rawTypeName];
+ if (typeDefaults && Object.keys(typeDefaults).length) {
+ customFields = {};
+ for (const [k, v] of Object.entries(typeDefaults)) {
+ if (v && typeof v === 'object' && 'id' in (v as any)) {
+ customFields[k] = { id: (v as any).id };
+ } else {
+ customFields[k] = v;
+ }
+ }
+ }
+ }
+
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
  const created = await (provider as any).createWorkItem({
  type: p.type!,
@@ -1055,10 +1073,10 @@ export class PmAgent {
  priority: p.priority,
  assigneeId: p.assigneeId,
  labels: p.labels,
- // ADO needs full iteration path; Jira needs numeric sprint ID
  sprintId: platform === 'azuredevops' ? p.iterationPath : p.sprintId,
  parentId: p.parentId,
- rawTypeName: rawTypeName
+ rawTypeName: rawTypeName,
+ customFields
  });
 
  this.mem.lastItem = created;
