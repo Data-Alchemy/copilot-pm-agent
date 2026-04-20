@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.0.6] - 2026-04-20
+
+### Bug Fixes
+
+- GitHub config save — use full keys for nested dot compatibility and merge'
+- GitHub config save — use full keys for nested dot compatibility
+
 ## [1.0.5] - 2026-04-20
 
 ### Bug Fixes
