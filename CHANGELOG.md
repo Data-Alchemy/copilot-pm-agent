@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [0.9.2] - 2026-04-20
+
+### Bug Fixes
+
+- fixing issue with the github provider no being registered when trying to create tickets in github and merge
+- fixing issue with the github provider no being registered when trying to create tickets in github'
+
 ## [1.0.4] - 2026-04-17
 
 ### Bug Fixes
