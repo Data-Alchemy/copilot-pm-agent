@@ -89,6 +89,14 @@ export class GitHubProvider {
   // ── Search / List ────────────────────────────────────────────────────────
 
   async searchWorkItems(query: WorkItemQuery): Promise<WorkItem[]> {
+    // If a project is configured and no specific text/type filter, load from project board
+    if (this.projectNumber && !query.text && !query.type) {
+      try {
+        const items = await this._searchFromProject(query);
+        if (items.length) { return items; }
+      } catch { /* fall through to REST search */ }
+    }
+
     const parts = [`repo:${this.owner}/${this.repo}`, 'is:issue'];
     if (query.status === 'open') { parts.push('is:open'); }
     else if (query.status === 'closed' || query.status === 'done') { parts.push('is:closed'); }
@@ -113,6 +121,109 @@ export class GitHubProvider {
     );
 
     return (data.items ?? []).map((i: any) => this.mapIssue(i));
+  }
+
+  /** Load items directly from GitHub Projects v2 board with their project-specific status */
+  private async _searchFromProject(query: WorkItemQuery): Promise<WorkItem[]> {
+    const projectId = await this.getProjectId();
+    const max = query.maxResults ?? 100;
+    let cursor: string | null = null;
+    const allItems: WorkItem[] = [];
+
+    while (allItems.length < max) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const gqlResult: any = await this.graphql<any>(`
+        query($projectId: ID!, $cursor: String) {
+          node(id: $projectId) {
+            ... on ProjectV2 {
+              items(first: 100, after: $cursor) {
+                pageInfo { hasNextPage endCursor }
+                nodes {
+                  fieldValues(first: 20) {
+                    nodes {
+                      ... on ProjectV2ItemFieldSingleSelectValue {
+                        name
+                        field { ... on ProjectV2SingleSelectField { name } }
+                      }
+                    }
+                  }
+                  content {
+                    ... on Issue {
+                      number title body state
+                      createdAt updatedAt
+                      url
+                      assignees(first: 5) { nodes { login email } }
+                      labels(first: 20) { nodes { name } }
+                      milestone { title }
+                      author { login }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `, { projectId, cursor });
+
+      const items: any = gqlResult?.node?.items;
+      const nodes = items?.nodes ?? [];
+
+      for (const node of nodes) {
+        const content = node?.content;
+        if (!content?.number) { continue; } // skip drafts/PRs without number
+
+        // Extract project-specific status from field values
+        let projectStatus = content.state === 'CLOSED' ? 'Closed' : 'Open';
+        for (const fv of (node.fieldValues?.nodes ?? [])) {
+          if (fv?.field?.name?.toLowerCase() === 'status' && fv?.name) {
+            projectStatus = fv.name;
+            break;
+          }
+        }
+
+        // Filter by status if requested
+        if (query.status === 'open' && content.state === 'CLOSED') { continue; }
+        if ((query.status === 'closed' || query.status === 'done') && content.state !== 'CLOSED') { continue; }
+
+        // Filter by assignee if requested
+        const assignees = (content.assignees?.nodes ?? []).map((a: any) => a?.login).filter(Boolean);
+        if (query.assigneeId && query.assigneeId !== '@me') {
+          if (!assignees.includes(query.assigneeId)) { continue; }
+        }
+
+        const labels = (content.labels?.nodes ?? []).map((l: any) => l?.name).filter(Boolean);
+        const type = this.labelsToType(labels);
+
+        allItems.push({
+          id: String(content.number),
+          key: `#${content.number}`,
+          title: content.title ?? '(no title)',
+          description: stripHtml(content.body ?? ''),
+          type,
+          rawTypeName: labels.find((l: string) =>
+            ['bug', 'enhancement', 'feature', 'epic', 'task', 'story'].includes(l.toLowerCase())
+          ) ?? type,
+          status: projectStatus,
+          assignee: assignees.length ? { id: assignees[0], displayName: assignees[0] } : undefined,
+          reporter: content.author ? { id: content.author.login, displayName: content.author.login } : undefined,
+          labels,
+          sprint: content.milestone?.title,
+          url: content.url ?? `https://github.com/${this.owner}/${this.repo}/issues/${content.number}`,
+          platform: 'github',
+          projectKey: `${this.owner}/${this.repo}`,
+          createdAt: content.createdAt,
+          updatedAt: content.updatedAt,
+        });
+      }
+
+      if (items?.pageInfo?.hasNextPage && items.pageInfo.endCursor) {
+        cursor = items.pageInfo.endCursor;
+      } else {
+        break;
+      }
+    }
+
+    return allItems.slice(0, max);
   }
 
   // ── Single item ──────────────────────────────────────────────────────────
@@ -176,15 +287,38 @@ export class GitHubProvider {
     if (typeLabel) { labels.push(typeLabel); }
     if (input.priority) { labels.push(`priority:${input.priority.toLowerCase()}`); }
 
-    const issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
-      method: 'POST',
-      body: JSON.stringify({
-        title: input.title,
-        body,
-        labels: labels.length ? labels : undefined,
-        assignees: input.assigneeId ? [input.assigneeId] : undefined,
-      }),
-    });
+    const issueBody: any = {
+      title: input.title,
+      body,
+      assignees: input.assigneeId ? [input.assigneeId] : undefined,
+    };
+
+    let issue: any;
+    // Try with labels first; if that fails (no label permission), retry without
+    if (labels.length) {
+      try {
+        issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
+          method: 'POST',
+          body: JSON.stringify({ ...issueBody, labels }),
+        });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('403') || msg.includes('label') || msg.includes('422')) {
+          // Retry without labels
+          issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
+            method: 'POST',
+            body: JSON.stringify(issueBody),
+          });
+        } else {
+          throw e;
+        }
+      }
+    } else {
+      issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
+        method: 'POST',
+        body: JSON.stringify(issueBody),
+      });
+    }
 
     const item = this.mapIssue(issue);
 
@@ -301,6 +435,51 @@ export class GitHubProvider {
   // ── Members ──────────────────────────────────────────────────────────────
 
   async getProjectMembers(): Promise<User[]> {
+    // Try project-specific members via GraphQL (assignees from project items)
+    if (this.projectNumber) {
+      try {
+        const projectId = await this.getProjectId();
+        const data = await this.graphql<any>(`
+          query($projectId: ID!) {
+            node(id: $projectId) {
+              ... on ProjectV2 {
+                items(first: 100) {
+                  nodes {
+                    content {
+                      ... on Issue {
+                        assignees(first: 10) {
+                          nodes { login avatarUrl email: databaseId }
+                        }
+                      }
+                      ... on PullRequest {
+                        assignees(first: 10) {
+                          nodes { login avatarUrl }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `, { projectId });
+        const seen = new Set<string>();
+        const users: User[] = [];
+        const items = data?.node?.items?.nodes ?? [];
+        for (const item of items) {
+          const assignees = item?.content?.assignees?.nodes ?? [];
+          for (const a of assignees) {
+            if (a?.login && !seen.has(a.login)) {
+              seen.add(a.login);
+              users.push({ id: a.login, displayName: a.login, email: undefined });
+            }
+          }
+        }
+        if (users.length) { return users; }
+      } catch { /* fall through */ }
+    }
+
+    // Fallback: repo collaborators
     try {
       const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/collaborators?per_page=100`);
       return (data ?? []).map((u: any) => ({
@@ -397,12 +576,79 @@ export class GitHubProvider {
   // ── Work item types (labels) ─────────────────────────────────────────────
 
   async getWorkItemTypes(): Promise<string[]> {
+    // Try to get labels actually used in the project
+    if (this.projectNumber) {
+      try {
+        const projectId = await this.getProjectId();
+        const data = await this.graphql<any>(`
+          query($projectId: ID!) {
+            node(id: $projectId) {
+              ... on ProjectV2 {
+                items(first: 100) {
+                  nodes {
+                    content {
+                      ... on Issue {
+                        labels(first: 20) { nodes { name } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `, { projectId });
+        const seen = new Set<string>();
+        const items = data?.node?.items?.nodes ?? [];
+        for (const item of items) {
+          const labels = item?.content?.labels?.nodes ?? [];
+          for (const l of labels) {
+            if (l?.name) { seen.add(l.name); }
+          }
+        }
+        if (seen.size) { return [...seen].sort(); }
+      } catch { /* fall through */ }
+    }
+
+    // Fallback: repo labels
     try {
       const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/labels?per_page=100`);
       return (data ?? []).map((l: any) => String(l.name));
     } catch {
       return ['bug', 'enhancement', 'task', 'epic', 'question', 'documentation'];
     }
+  }
+
+  // ── Project status field options (Projects v2 custom statuses) ──────────
+
+  async getProjectStatuses(): Promise<string[]> {
+    if (!this.projectNumber) { return ['Open', 'Closed']; }
+    try {
+      const projectId = await this.getProjectId();
+      const data = await this.graphql<any>(`
+        query($projectId: ID!) {
+          node(id: $projectId) {
+            ... on ProjectV2 {
+              fields(first: 50) {
+                nodes {
+                  ... on ProjectV2SingleSelectField {
+                    name
+                    options { id name }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `, { projectId });
+      const fields = data?.node?.fields?.nodes ?? [];
+      const statusField = fields.find((f: any) =>
+        f?.name?.toLowerCase() === 'status' && f?.options?.length
+      );
+      if (statusField) {
+        return statusField.options.map((o: any) => o.name);
+      }
+    } catch { /* fall through */ }
+    return ['Open', 'Closed'];
   }
 
   // ── Mapping ──────────────────────────────────────────────────────────────
