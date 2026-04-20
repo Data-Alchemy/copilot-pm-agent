@@ -132,10 +132,11 @@ export class SetupWizardPanel {
                 _lastSavedResult = data;
               } else if (data.platform === 'github') {
                 await config.update('platform', 'github', vscode.ConfigurationTarget.Global);
-                await config.update('github.owner', data.githubOwner!, vscode.ConfigurationTarget.Global);
-                await config.update('github.repo', data.githubRepo!, vscode.ConfigurationTarget.Global);
+                const root = vscode.workspace.getConfiguration();
+                await root.update('pmAgent.github.owner', data.githubOwner!, vscode.ConfigurationTarget.Global);
+                await root.update('pmAgent.github.repo', data.githubRepo!, vscode.ConfigurationTarget.Global);
                 if (data.githubProjectNumber) {
-                  await config.update('github.projectNumber', data.githubProjectNumber, vscode.ConfigurationTarget.Global);
+                  await root.update('pmAgent.github.projectNumber', data.githubProjectNumber, vscode.ConfigurationTarget.Global);
                 }
                 if (data.githubToken) {
                   await context.secrets.store('pmAgent.github.personalAccessToken', data.githubToken);
