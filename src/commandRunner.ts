@@ -1187,6 +1187,116 @@ export class CommandRunner {
       try { dstMembers = await dstProvider.getProjectMembers(); } catch { /* empty */ }
     }
 
+    // ── PLAN MODE — validate everything without creating ──────────────────
+    const modeOpts = [
+      { label: '$(play) Execute migration',  description: 'Create items now',                        value: 'execute' },
+      { label: '$(checklist) Plan (dry run)', description: 'Validate everything first, create nothing', value: 'plan' },
+      { label: '$(close) Cancel',             description: '',                                         value: 'cancel' },
+    ];
+    const modePick = await vscode.window.showQuickPick(modeOpts, {
+      title: `${selectedItems.length} item${selectedItems.length !== 1 ? 's' : ''} · ${[...fields].join(', ')} · ${Object.entries(typeMap).map(([s,d]) => `${s}→${d}`).join(', ')}`,
+      placeHolder: 'Plan first to check for errors, or execute directly',
+      ignoreFocusOut: true
+    });
+    if (!modePick || modePick.value === 'cancel') { return; }
+
+    const isPlan = modePick.value === 'plan';
+
+    if (isPlan) {
+      // ── DRY RUN — validate each item without creating ───────────────────
+      const planLines: string[] = [];
+      let planOk = 0, planWarn = 0;
+
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Planning migration...' },
+        async progress => {
+          for (let idx = 0; idx < selectedItems.length; idx++) {
+            const src = selectedItems[idx].wi;
+            progress.report({ message: `Validating ${idx+1}/${selectedItems.length}: ${src.key}` });
+            try {
+              const full = await srcProvider.getWorkItem(src.key);
+              const srcTypeName = full.rawTypeName ?? cap(full.type);
+              const dstTypeName = typeMap[srcTypeName] ?? cap(full.type);
+              const cleanDesc = stripHtml(full.description ?? '');
+              const warnings: string[] = [];
+
+              // Check type mapping
+              if (!dstTypes.find((d: string) => d === dstTypeName)) {
+                warnings.push(`Type "${dstTypeName}" not found in ${dstName}`);
+              }
+
+              // Check assignee
+              if (fields.has('assignee') && full.assignee?.email) {
+                const match = dstMembers.find((m: any) =>
+                  m.email?.toLowerCase() === full.assignee?.email?.toLowerCase()
+                );
+                if (!match) { warnings.push(`Assignee "${full.assignee.displayName}" not found in ${dstName}`); }
+              }
+
+              // Check description
+              if (!cleanDesc && !full.title) { warnings.push('No title or description'); }
+
+              // Check comments
+              let commentCount = full.comments?.length ?? 0;
+              if (fields.has('comments') && !commentCount) {
+                try {
+                  const c = await srcProvider.getComments(full.key ?? full.id);
+                  commentCount = c.length;
+                } catch { /* unavailable */ }
+              }
+
+              // Check children
+              let childCount = 0;
+              if (fields.has('children')) {
+                try {
+                  const children = await (srcProvider as any).getChildItems?.(full.id ?? src.key) ?? [];
+                  childCount = children.length;
+                } catch { /* unavailable */ }
+              }
+
+              const status = warnings.length ? '⚠' : '✓';
+              if (warnings.length) { planWarn++; } else { planOk++; }
+              planLines.push(
+                `${status} **${src.key}** → ${dstTypeName}` +
+                ` · ${cleanDesc ? cleanDesc.slice(0, 60) + '…' : 'no desc'}` +
+                (commentCount ? ` · ${commentCount} comments` : '') +
+                (childCount ? ` · ${childCount} children` : '') +
+                (full.assignee ? ` · ${full.assignee.displayName}` : '') +
+                (warnings.length ? `\n  ⚠ ${warnings.join(' | ')}` : '')
+              );
+            } catch (e) {
+              planWarn++;
+              planLines.push(`✗ **${src.key}** — ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+        }
+      );
+
+      // Show plan report
+      const planSummary = [
+        `## Migration Plan — ${srcName} → ${dstName}`,
+        '',
+        `**Items:** ${selectedItems.length} · **Valid:** ${planOk} · **Warnings:** ${planWarn}`,
+        `**Fields:** ${[...fields].join(', ')}`,
+        `**Type mapping:** ${Object.entries(typeMap).map(([s,d]) => `${s} → ${d}`).join(', ')}`,
+        '',
+        ...planLines
+      ].join('\n');
+
+      this._lastMigrateResult = planSummary;
+
+      // Ask to proceed
+      const proceed = await vscode.window.showQuickPick(
+        [
+          { label: '$(play) Execute now', description: `Create ${planOk} valid items`, value: 'execute' },
+          { label: '$(close) Cancel',     description: 'Review the plan first',        value: 'cancel' }
+        ],
+        { title: `Plan complete — ${planOk} valid, ${planWarn} warnings`, ignoreFocusOut: true }
+      );
+      if (!proceed || proceed.value === 'cancel') { return; }
+    }
+
+    // ── EXECUTE — create items ────────────────────────────────────────────
     // Run migration
     let moved = 0, failed = 0;
     const createdKeys: string[] = [];

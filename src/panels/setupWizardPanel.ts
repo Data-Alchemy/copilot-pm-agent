@@ -134,7 +134,9 @@ export class SetupWizardPanel {
                 await config.update('platform', 'github', vscode.ConfigurationTarget.Global);
                 await config.update('github.owner', data.githubOwner!, vscode.ConfigurationTarget.Global);
                 await config.update('github.repo', data.githubRepo!, vscode.ConfigurationTarget.Global);
-                await config.update('github.projectNumber', data.githubProjectNumber ?? 0, vscode.ConfigurationTarget.Global);
+                if (data.githubProjectNumber) {
+                  await config.update('github.projectNumber', data.githubProjectNumber, vscode.ConfigurationTarget.Global);
+                }
                 if (data.githubToken) {
                   await context.secrets.store('pmAgent.github.personalAccessToken', data.githubToken);
                 }
