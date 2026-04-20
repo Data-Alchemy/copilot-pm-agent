@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.0.7] - 2026-04-20
+
+### Bug Fixes
+
+- was using wrong api for github projects was pulling from issues and not projects and merge
+- was using wrong api for github projects was pulling from issues and not projects
+
 ## [1.0.6] - 2026-04-20
 
 ### Bug Fixes
