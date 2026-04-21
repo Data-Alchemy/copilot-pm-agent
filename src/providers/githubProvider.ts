@@ -351,8 +351,15 @@ export class GitHubProvider {
 
         const projectItemId = addResult?.addProjectV2ItemById?.item?.id;
         if (projectItemId) {
-          // Set date fields on the project item
-          await this._setProjectDates(projectId, projectItemId, input.startDate, input.endDate);
+          await this._setProjectFields(projectId, projectItemId, {
+            type: input.type,
+            rawTypeName: input.rawTypeName,
+            storyPoints: input.storyPoints,
+            priority: input.priority,
+            labels: input.labels,
+            startDate: input.startDate,
+            endDate: input.endDate,
+          });
         }
       } catch { /* project add is best-effort */ }
     }
@@ -577,33 +584,115 @@ export class GitHubProvider {
     return this._projectFields!;
   }
 
-  /** Set date fields on a project item */
-  private async _setProjectDates(projectId: string, itemId: string, startDate?: string, endDate?: string): Promise<void> {
-    if (!startDate && !endDate) { return; }
+  /** Set ALL project fields on a project item — Status, Size, Estimate, Type, Priority, dates */
+  async _setProjectFields(projectId: string, itemId: string, input: {
+    status?: string;
+    type?: string;
+    rawTypeName?: string;
+    storyPoints?: number;
+    priority?: string;
+    labels?: string[];
+    startDate?: string;
+    endDate?: string;
+  }): Promise<void> {
     try {
       const fields = await this._getProjectFields(projectId);
+
       for (const field of fields) {
-        if (!field?.id || field.dataType !== 'DATE') { continue; }
+        if (!field?.id) { continue; }
         const name = (field.name ?? '').toLowerCase();
-        let dateValue: string | undefined;
-        if ((name === 'start date' || name === 'start' || name === 'startdate') && startDate) {
-          dateValue = startDate;
-        } else if ((name === 'end date' || name === 'due date' || name === 'target date' || name === 'end' || name === 'due' || name === 'enddate') && endDate) {
-          dateValue = endDate;
-        }
-        if (dateValue) {
-          await this.graphql(`
-            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Date!) {
-              updateProjectV2ItemFieldValue(input: {
-                projectId: $projectId, itemId: $itemId,
-                fieldId: $fieldId,
-                value: { date: $value }
-              }) { projectV2Item { id } }
+        const dataType = field.dataType;
+
+        try {
+          // ── SingleSelect fields (Status, Size, Type, Priority) ──────────
+          if (dataType === 'SINGLE_SELECT' && field.options?.length) {
+            let targetOptionName: string | undefined;
+
+            if (name === 'status' && input.status) {
+              targetOptionName = input.status;
+            } else if (name === 'type') {
+              targetOptionName = input.rawTypeName ?? input.type;
+            } else if (name === 'priority' && input.priority) {
+              targetOptionName = input.priority;
+            } else if (name === 'size' && input.storyPoints) {
+              // Size is often a t-shirt size or number — find closest match
+              targetOptionName = String(input.storyPoints);
             }
-          `, { projectId, itemId, fieldId: field.id, value: dateValue });
-        }
+
+            if (targetOptionName) {
+              const opt = field.options.find((o: any) =>
+                o.name.toLowerCase() === targetOptionName!.toLowerCase()
+              ) ?? field.options.find((o: any) =>
+                o.name.toLowerCase().includes(targetOptionName!.toLowerCase()) ||
+                targetOptionName!.toLowerCase().includes(o.name.toLowerCase())
+              );
+              if (opt) {
+                await this.graphql(`
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $projectId, itemId: $itemId,
+                      fieldId: $fieldId,
+                      value: { singleSelectOptionId: $optionId }
+                    }) { projectV2Item { id } }
+                  }
+                `, { projectId, itemId, fieldId: field.id, optionId: opt.id });
+              }
+            }
+          }
+
+          // ── Number fields (Estimate, Story Points) ─────────────────────
+          else if (dataType === 'NUMBER' && input.storyPoints) {
+            if (name === 'estimate' || name === 'story points' || name === 'points' || name === 'effort') {
+              await this.graphql(`
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId, itemId: $itemId,
+                    fieldId: $fieldId,
+                    value: { number: $value }
+                  }) { projectV2Item { id } }
+                }
+              `, { projectId, itemId, fieldId: field.id, value: input.storyPoints });
+            }
+          }
+
+          // ── Date fields (Start Date, End Date) ─────────────────────────
+          else if (dataType === 'DATE') {
+            let dateValue: string | undefined;
+            if ((name === 'start date' || name === 'start' || name === 'startdate') && input.startDate) {
+              dateValue = input.startDate;
+            } else if ((name === 'end date' || name === 'due date' || name === 'target date' || name === 'end' || name === 'due' || name === 'enddate') && input.endDate) {
+              dateValue = input.endDate;
+            }
+            if (dateValue) {
+              await this.graphql(`
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Date!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId, itemId: $itemId,
+                    fieldId: $fieldId,
+                    value: { date: $value }
+                  }) { projectV2Item { id } }
+                }
+              `, { projectId, itemId, fieldId: field.id, value: dateValue });
+            }
+          }
+
+          // ── Text fields (labels as text if no label API) ───────────────
+          else if (dataType === 'TEXT') {
+            if (name === 'labels' && input.labels?.length) {
+              await this.graphql(`
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId, itemId: $itemId,
+                    fieldId: $fieldId,
+                    value: { text: $value }
+                  }) { projectV2Item { id } }
+                }
+              `, { projectId, itemId, fieldId: field.id, value: input.labels.join(', ') });
+            }
+          }
+        } catch { /* individual field setting is best-effort */ }
       }
-    } catch { /* date setting is best-effort */ }
+    } catch { /* field setting is best-effort */ }
   }
 
   // ── Projects ─────────────────────────────────────────────────────────────
@@ -650,49 +739,31 @@ export class GitHubProvider {
   // ── Work item types (labels) ─────────────────────────────────────────────
 
   async getWorkItemTypes(): Promise<string[]> {
-    // Standard issue types that GitHub supports via labels
-    const types = new Set<string>(['Epic', 'Task', 'Bug', 'Story', 'Feature']);
-
-    // Add labels from the repo
-    try {
-      const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/labels?per_page=100`);
-      for (const l of (data ?? [])) {
-        types.add(String(l.name));
-      }
-    } catch { /* skip */ }
-
-    // Add labels actually used in the project
+    // 1. Check if the project has a "Type" single-select field — use those options as primary
     if (this.projectNumber) {
       try {
         const projectId = await this.getProjectId();
-        const data = await this.graphql<any>(`
-          query($projectId: ID!) {
-            node(id: $projectId) {
-              ... on ProjectV2 {
-                items(first: 100) {
-                  nodes {
-                    content {
-                      ... on Issue {
-                        labels(first: 20) { nodes { name } }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `, { projectId });
-        for (const item of (data?.node?.items?.nodes ?? [])) {
-          for (const l of (item?.content?.labels?.nodes ?? [])) {
-            if (l?.name) { types.add(l.name); }
-          }
+        const fields = await this._getProjectFields(projectId);
+        const typeField = fields.find((f: any) =>
+          f?.name?.toLowerCase() === 'type' && f?.options?.length
+        );
+        if (typeField) {
+          return typeField.options.map((o: any) => o.name);
         }
-      } catch { /* skip */ }
+      } catch { /* fall through */ }
     }
+
+    // 2. Fallback: standard types + repo labels
+    const types = new Set<string>(['Epic', 'Task', 'Bug', 'Story', 'Feature']);
+
+    try {
+      const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/labels?per_page=100`);
+      for (const l of (data ?? [])) { types.add(String(l.name)); }
+    } catch { /* skip */ }
 
     // Sort: standard types first, then alphabetical
     const standard = ['Epic', 'Story', 'Task', 'Bug', 'Feature'];
-    const sorted = [...types].sort((a, b) => {
+    return [...types].sort((a, b) => {
       const ai = standard.indexOf(a);
       const bi = standard.indexOf(b);
       if (ai !== -1 && bi !== -1) { return ai - bi; }
@@ -700,7 +771,6 @@ export class GitHubProvider {
       if (bi !== -1) { return 1; }
       return a.localeCompare(b);
     });
-    return sorted;
   }
 
   // ── Project status field options (Projects v2 custom statuses) ──────────
@@ -709,23 +779,7 @@ export class GitHubProvider {
     if (!this.projectNumber) { return ['Open', 'Closed']; }
     try {
       const projectId = await this.getProjectId();
-      const data = await this.graphql<any>(`
-        query($projectId: ID!) {
-          node(id: $projectId) {
-            ... on ProjectV2 {
-              fields(first: 50) {
-                nodes {
-                  ... on ProjectV2SingleSelectField {
-                    name
-                    options { id name }
-                  }
-                }
-              }
-            }
-          }
-        }
-      `, { projectId });
-      const fields = data?.node?.fields?.nodes ?? [];
+      const fields = await this._getProjectFields(projectId);
       const statusField = fields.find((f: any) =>
         f?.name?.toLowerCase() === 'status' && f?.options?.length
       );
@@ -734,6 +788,22 @@ export class GitHubProvider {
       }
     } catch { /* fall through */ }
     return ['Open', 'Closed'];
+  }
+
+  /** Get all project custom fields with their options — used by Configure Platform and create flow */
+  async getProjectFieldOptions(): Promise<Array<{ name: string; type: string; options?: string[] }>> {
+    if (!this.projectNumber) { return []; }
+    try {
+      const projectId = await this.getProjectId();
+      const fields = await this._getProjectFields(projectId);
+      return fields
+        .filter((f: any) => f?.name && f?.dataType)
+        .map((f: any) => ({
+          name: f.name,
+          type: f.dataType,
+          options: f.options?.map((o: any) => o.name) ?? undefined,
+        }));
+    } catch { return []; }
   }
 
   // ── Mapping ──────────────────────────────────────────────────────────────
