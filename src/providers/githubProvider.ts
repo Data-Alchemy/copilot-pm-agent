@@ -296,43 +296,48 @@ export class GitHubProvider {
       body += `\n\n**Story Points:** ${input.storyPoints}`;
     }
 
-    // Map type to label
-    const labels: string[] = [...(input.labels ?? [])];
-    const typeLabel = this.typeToLabel(input.rawTypeName ?? input.type);
-    if (typeLabel) { labels.push(typeLabel); }
-    if (input.priority) { labels.push(`priority:${input.priority.toLowerCase()}`); }
-
     const issueBody: any = {
       title: input.title,
       body,
       assignees: input.assigneeId ? [input.assigneeId] : undefined,
     };
 
+    // Set the issue type via the REST API type field (not labels)
+    const typeName = input.rawTypeName ?? this.typeToLabel(input.type) ?? input.type;
+    if (typeName) {
+      issueBody.type = typeName;
+    }
+
+    // Labels are for actual labels only, not for type
+    if (input.labels?.length) {
+      issueBody.labels = input.labels;
+    }
+
     let issue: any;
-    // Try with labels first; if that fails (no label permission), retry without
-    if (labels.length) {
-      try {
-        issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
-          method: 'POST',
-          body: JSON.stringify({ ...issueBody, labels }),
-        });
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes('403') || msg.includes('label') || msg.includes('422')) {
-          // Retry without labels
-          issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
-            method: 'POST',
-            body: JSON.stringify(issueBody),
-          });
-        } else {
-          throw e;
-        }
-      }
-    } else {
+    try {
       issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
         method: 'POST',
         body: JSON.stringify(issueBody),
       });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // If type field fails (org doesn't support issue types), retry without it
+      if (msg.includes('type') || msg.includes('422') || msg.includes('validation')) {
+        delete issueBody.type;
+        delete issueBody.labels; // labels might also fail
+        issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
+          method: 'POST',
+          body: JSON.stringify(issueBody),
+        });
+      } else if (msg.includes('403') || msg.includes('label')) {
+        delete issueBody.labels;
+        issue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues`, {
+          method: 'POST',
+          body: JSON.stringify(issueBody),
+        });
+      } else {
+        throw e;
+      }
     }
 
     const item = this.mapIssue(issue);
@@ -427,12 +432,15 @@ export class GitHubProvider {
   async addParentLink(childNumber: string, parentNumber: string): Promise<void> {
     const child = String(childNumber).replace(/^#/, '');
     const parent = String(parentNumber).replace(/^#/, '');
-    // GitHub doesn't have native parent/child — use sub-issue if available, otherwise comment
     try {
-      // Try the sub-issues API (GitHub Projects beta)
+      // Sub-issues API needs the child's numeric `id` (NOT issue number)
+      // Fetch the child issue to get its id
+      const childIssue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${child}`);
+      const childId = childIssue.id; // numeric database ID
+
       await this.rest(`/repos/${this.owner}/${this.repo}/issues/${parent}/sub_issues`, {
         method: 'POST',
-        body: JSON.stringify({ sub_issue_id: Number(child) }),
+        body: JSON.stringify({ sub_issue_id: childId }),
       });
     } catch {
       // Fallback: add a comment referencing the parent
@@ -598,13 +606,18 @@ export class GitHubProvider {
     try {
       const fields = await this._getProjectFields(projectId);
 
+      // Map story points to t-shirt size
+      const pointsToSize: Record<number, string> = {
+        1: 'XS', 2: 'S', 3: 'M', 5: 'L', 8: 'XL', 13: 'XXL'
+      };
+
       for (const field of fields) {
         if (!field?.id) { continue; }
         const name = (field.name ?? '').toLowerCase();
         const dataType = field.dataType;
 
         try {
-          // ── SingleSelect fields (Status, Size, Type, Priority) ──────────
+          // ── SingleSelect fields ────────────────────────────────────────
           if (dataType === 'SINGLE_SELECT' && field.options?.length) {
             let targetOptionName: string | undefined;
 
@@ -615,17 +628,18 @@ export class GitHubProvider {
             } else if (name === 'priority' && input.priority) {
               targetOptionName = input.priority;
             } else if (name === 'size' && input.storyPoints) {
-              // Size is often a t-shirt size or number — find closest match
-              targetOptionName = String(input.storyPoints);
+              // Map points to t-shirt size (S/M/L/XL)
+              targetOptionName = pointsToSize[input.storyPoints] ?? String(input.storyPoints);
             }
 
             if (targetOptionName) {
-              const opt = field.options.find((o: any) =>
-                o.name.toLowerCase() === targetOptionName!.toLowerCase()
-              ) ?? field.options.find((o: any) =>
-                o.name.toLowerCase().includes(targetOptionName!.toLowerCase()) ||
-                targetOptionName!.toLowerCase().includes(o.name.toLowerCase())
-              );
+              // Exact match first, then case-insensitive, then partial
+              const opt = field.options.find((o: any) => o.name === targetOptionName)
+                ?? field.options.find((o: any) => o.name.toLowerCase() === targetOptionName!.toLowerCase())
+                ?? field.options.find((o: any) =>
+                  o.name.toLowerCase().includes(targetOptionName!.toLowerCase()) ||
+                  targetOptionName!.toLowerCase().includes(o.name.toLowerCase())
+                );
               if (opt) {
                 await this.graphql(`
                   mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
@@ -655,7 +669,7 @@ export class GitHubProvider {
             }
           }
 
-          // ── Date fields (Start Date, End Date) ─────────────────────────
+          // ── Date fields ────────────────────────────────────────────────
           else if (dataType === 'DATE') {
             let dateValue: string | undefined;
             if ((name === 'start date' || name === 'start' || name === 'startdate') && input.startDate) {
@@ -673,21 +687,6 @@ export class GitHubProvider {
                   }) { projectV2Item { id } }
                 }
               `, { projectId, itemId, fieldId: field.id, value: dateValue });
-            }
-          }
-
-          // ── Text fields (labels as text if no label API) ───────────────
-          else if (dataType === 'TEXT') {
-            if (name === 'labels' && input.labels?.length) {
-              await this.graphql(`
-                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: String!) {
-                  updateProjectV2ItemFieldValue(input: {
-                    projectId: $projectId, itemId: $itemId,
-                    fieldId: $fieldId,
-                    value: { text: $value }
-                  }) { projectV2Item { id } }
-                }
-              `, { projectId, itemId, fieldId: field.id, value: input.labels.join(', ') });
             }
           }
         } catch { /* individual field setting is best-effort */ }
@@ -739,7 +738,15 @@ export class GitHubProvider {
   // ── Work item types (labels) ─────────────────────────────────────────────
 
   async getWorkItemTypes(): Promise<string[]> {
-    // 1. Check if the project has a "Type" single-select field — use those options as primary
+    // 1. Try org issue-types REST API (new GitHub feature)
+    try {
+      const data = await this.rest<any[]>(`/orgs/${this.owner}/issue-types`);
+      if (data?.length) {
+        return data.filter((t: any) => t.is_enabled !== false).map((t: any) => t.name);
+      }
+    } catch { /* org may not have issue types enabled, or no permission */ }
+
+    // 2. Check if the project has a "Type" single-select field
     if (this.projectNumber) {
       try {
         const projectId = await this.getProjectId();
@@ -753,24 +760,8 @@ export class GitHubProvider {
       } catch { /* fall through */ }
     }
 
-    // 2. Fallback: standard types + repo labels
-    const types = new Set<string>(['Epic', 'Task', 'Bug', 'Story', 'Feature']);
-
-    try {
-      const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/labels?per_page=100`);
-      for (const l of (data ?? [])) { types.add(String(l.name)); }
-    } catch { /* skip */ }
-
-    // Sort: standard types first, then alphabetical
-    const standard = ['Epic', 'Story', 'Task', 'Bug', 'Feature'];
-    return [...types].sort((a, b) => {
-      const ai = standard.indexOf(a);
-      const bi = standard.indexOf(b);
-      if (ai !== -1 && bi !== -1) { return ai - bi; }
-      if (ai !== -1) { return -1; }
-      if (bi !== -1) { return 1; }
-      return a.localeCompare(b);
-    });
+    // 3. Fallback: standard types
+    return ['Epic', 'Story', 'Task', 'Bug', 'Feature'];
   }
 
   // ── Project status field options (Projects v2 custom statuses) ──────────
@@ -854,9 +845,10 @@ export class GitHubProvider {
 
   private typeToLabel(type: string): string | null {
     const t = type.toLowerCase();
-    if (t === 'bug') { return 'bug'; }
-    if (t === 'story' || t === 'enhancement' || t === 'feature') { return 'enhancement'; }
-    if (t === 'epic') { return 'epic'; }
+    if (t === 'bug') { return 'Bug'; }
+    if (t === 'story' || t === 'enhancement' || t === 'feature') { return 'Feature'; }
+    if (t === 'epic') { return 'Epic'; }
+    if (t === 'task') { return 'Task'; }
     return null;
   }
 }
