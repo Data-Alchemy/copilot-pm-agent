@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.1.3] - 2026-04-21
+
+### Bug Fixes
+
+- github fields where inconsistent
+- GitHub issue types, sub-issues, t-shirt sizing — use proper REST/GraphQL APIs
+
 ## [1.1.2] - 2026-04-21
 
 ### Bug Fixes
