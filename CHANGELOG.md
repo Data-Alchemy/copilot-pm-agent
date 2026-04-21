@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.1.2] - 2026-04-21
+
+### Bug Fixes
+
+- AI JSON parsing — handle preamble text and markdown feenc and merge
+- AI JSON parsing — handle preamble text and markdown fences
+
 ## [1.1.1] - 2026-04-21
 
 ### Bug Fixes
