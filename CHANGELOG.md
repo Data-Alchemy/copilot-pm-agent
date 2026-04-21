@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.1.1] - 2026-04-21
+
+### Bug Fixes
+
+- set all GitHub project fields — Type, Size, Estimate, Priority, dates and merge
+- set all GitHub project fields — Type, Size, Estimate, Priority, dates
+
 ## [1.1.0] - 2026-04-21
 
 ### Features
