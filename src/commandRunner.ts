@@ -212,26 +212,21 @@ export class CommandRunner {
     if (!item) { return; }
 
     let states: string[] = [];
-    if (creds.platform === 'azuredevops') {
-      try {
-        const typeName = item.rawTypeName ?? item.type;
-        states = await (provider as AdoProvider).getWorkItemStates(typeName);
-      } catch { /* fall through */ }
-      if (!states.length) {
-        states = ['New', 'Active', 'Resolved', 'Closed'];
+    // Use provider optional methods — no platform-specific casts needed
+    try {
+      if (provider.getWorkItemStates) {
+        states = await provider.getWorkItemStates(item.rawTypeName ?? item.type);
+      } else if (provider.getProjectStatuses) {
+        states = await provider.getProjectStatuses();
+      } else if (provider.getAvailableTransitions) {
+        states = await provider.getAvailableTransitions(item.key);
       }
-    } else if (creds.platform === 'github') {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        states = await (provider as any).getProjectStatuses?.() ?? [];
-      } catch { /* fall through */ }
-      if (!states.length) { states = ['Open', 'Closed']; }
-    } else {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        states = await (provider as any).getAvailableTransitions?.(item.key) ?? [];
-      } catch { /* fall through */ }
-      if (!states.length) { states = ['To Do', 'In Progress', 'In Review', 'Done']; }
+    } catch { /* fall through */ }
+    if (!states.length) {
+      // Platform-appropriate defaults
+      if (creds.platform === 'azuredevops') { states = ['New', 'Active', 'Resolved', 'Closed']; }
+      else if (creds.platform === 'github') { states = ['Open', 'Closed']; }
+      else { states = ['To Do', 'In Progress', 'In Review', 'Done']; }
     }
 
     const opts = states
@@ -392,7 +387,7 @@ export class CommandRunner {
     let sprints: import('./types').Sprint[] = [];
     try {
       if (creds.platform === 'azuredevops') {
-        sprints = await (provider as AdoProvider).getAllSprints();
+        sprints = await provider.getAllSprints();
       } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         sprints = await (provider as any).getAllSprints?.() ?? [];
@@ -440,7 +435,7 @@ export class CommandRunner {
         for (const opt of selectedItems) {
           try {
             if (creds.platform === 'azuredevops') {
-              const adoP = provider as AdoProvider;
+              const adoP = provider as any;
               const n = (opt as IQ).wi.id.replace(/^#/, '').replace(/^AB#/i, '');
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const cur = await (adoP as any).http(`${(adoP as any).orgUrl}/_apis/wit/workitems/${n}?api-version=7.1`) as any;
@@ -480,7 +475,7 @@ export class CommandRunner {
     let sprints: import('./types').Sprint[] = [];
     try {
       if (creds.platform === 'azuredevops') {
-        sprints = await (provider as AdoProvider).getAllSprints();
+        sprints = await provider.getAllSprints();
       } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         sprints = await (provider as any).getAllSprints?.() ?? [];
@@ -952,7 +947,7 @@ export class CommandRunner {
       if (creds.platform === 'jira') {
         // Try to resolve email → accountId
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const resolved = await (provider as any).resolveUser?.(email.trim());
+        const resolved = await provider.resolveUser?.(email.trim());
         user = resolved ?? { id: email.trim(), displayName: email.trim(), email: email.trim() };
       } else {
         // ADO — use email as ID
@@ -970,60 +965,82 @@ export class CommandRunner {
 
   async parent() {
     const { provider, creds } = await this.getProvider();
-    if (creds.platform !== 'azuredevops' && creds.platform !== 'jira') {
-      vscode.window.showErrorMessage('Parent linking requires ADO or Jira.');
+
+    // Pick children to assign a parent to (multi-select)
+    const all = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'Loading items...' },
+      () => provider.searchWorkItems({ status: 'open', maxResults: 100 })
+    ).then(v => v, () => [] as import('./types').WorkItem[]);
+
+    if (!all.length) {
+      vscode.window.showErrorMessage('No open items found.');
       return;
     }
 
-    const child = await this.pickItem('Set parent for which item?');
-    if (!child) { return; }
+    type IQ = vscode.QuickPickItem & { wi: import('./types').WorkItem };
+    const childOpts: IQ[] = all.map(wi => ({
+      label:       `${wi.key} — ${wi.title}`,
+      description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}`,
+      wi
+    }));
 
-    // Load parent candidates — stories, epics, features
-    const all = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'Loading potential parents...' },
-      () => provider.searchWorkItems({ status: 'open', maxResults: 50 } as any)
-    ).then(v => v, () => [] as import('./types').WorkItem[]);
+    const selectedChildren = await vscode.window.showQuickPick<IQ>(childOpts, {
+      title:       'Select items to assign a parent to',
+      canPickMany: true,
+      matchOnDescription: true,
+      ignoreFocusOut: true
+    });
+    if (!selectedChildren?.length) { return; }
 
+    // Pick a parent from stories, epics, features (exclude selected children)
+    const childKeys = new Set(selectedChildren.map(c => c.wi.key));
     const parents = all.filter(i =>
-      i.key !== child.key &&
-      (['story', 'epic', 'feature'].includes(i.type) ||
-       !!(i.rawTypeName ?? '').toLowerCase().match(/story|epic|feature|requirement|backlog/))
+      !childKeys.has(i.key) &&
+      (['story', 'epic', 'feature', 'task'].includes(i.type) ||
+       !!(i.rawTypeName ?? '').toLowerCase().match(/story|epic|feature|requirement|backlog|task/))
     );
 
     if (!parents.length) {
-      vscode.window.showErrorMessage('No Stories, Epics, or Features found to use as parents.');
+      vscode.window.showErrorMessage('No eligible parent items found.');
       return;
     }
 
     type PQ = vscode.QuickPickItem & { item: import('./types').WorkItem };
-    const opts: PQ[] = parents.map(p => ({
+    const parentOpts: PQ[] = parents.map(p => ({
       label:       `${p.key} — ${p.title}`,
-      description: `${cap(p.type)} · ${p.status}`,
+      description: `${p.rawTypeName ?? cap(p.type)} · ${p.status}`,
       item:        p
     }));
 
-    const picked = await vscode.window.showQuickPick<PQ>(opts, {
-      title:          `Select parent for ${child.key}`,
+    const picked = await vscode.window.showQuickPick<PQ>(parentOpts, {
+      title:          `Select parent for ${selectedChildren.length} item${selectedChildren.length !== 1 ? 's' : ''}`,
       matchOnDescription: true,
       ignoreFocusOut: true
     });
     if (!picked) { return; }
 
+    // Link all selected children to the parent
+    let linked = 0, failed = 0;
     await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'Linking...' },
-      async () => {
-        if (creds.platform === 'azuredevops') {
-          await (provider as import('./providers/adoProvider').AdoProvider)
-            .addParentLink(child.id, picked.item.id);
-        } else {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (provider as any).addParentLink(child.key, picked.item.key || picked.item.id);
+      { location: vscode.ProgressLocation.Notification, title: `Linking ${selectedChildren.length} items to ${picked.item.key}...` },
+      async (progress) => {
+        for (const child of selectedChildren) {
+          progress.report({ message: `${child.wi.key}...` });
+          try {
+            // Use the provider's addParentLink — works for all platforms
+            const childId = creds.platform === 'azuredevops' ? child.wi.id : (child.wi.key || child.wi.id);
+            const parentId = creds.platform === 'azuredevops' ? picked.item.id : (picked.item.key || picked.item.id);
+            await provider.addParentLink(childId, parentId);
+            linked++;
+          } catch {
+            failed++;
+          }
         }
       }
     );
 
     vscode.window.showInformationMessage(
-      `${child.key} is now a child of ${picked.item.key} — ${picked.item.title}`
+      `Linked ${linked} item${linked !== 1 ? 's' : ''} to ${picked.item.key}${failed ? ` (${failed} failed)` : ''}`
     );
   }
 
@@ -1385,7 +1402,7 @@ export class CommandRunner {
             if (fields.has('assignee') && full.assignee?.email) {
               if (direction === 'ado-to-jira') {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const r = await (dstProvider as any).resolveUser?.(full.assignee.email);
+                const r = await dstProvider.resolveUser?.(full.assignee.email);
                 assigneeId = r?.id ?? full.assignee.email;
               } else {
                 const members = await dstProvider.getProjectMembers().catch(() => []);

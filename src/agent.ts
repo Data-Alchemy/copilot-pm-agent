@@ -142,7 +142,7 @@ export class PmAgent {
  const items = await provider.searchWorkItems(q);
 
  if (creds.platform === 'azuredevops') {
- const adoP = provider as AdoProvider;
+ const adoP = provider as any;
  stream.markdown(`\n_Query: \`${adoP.lastWiql}\` — **${adoP.lastRawCount}** result(s)_\n`);
  }
 
@@ -342,7 +342,7 @@ export class PmAgent {
  }
 
  if (dc.platform === 'azuredevops') {
- const adoP = provider as AdoProvider;
+ const adoP = provider as any;
  try {
  stream.progress('Test 1: project list...');
  const projects = await adoP.getProjects();
@@ -606,7 +606,7 @@ export class PmAgent {
  // ── WHAT type? ─────────────────────────────────────────────────────────
  if (platform === 'azuredevops') {
  stream.progress('Loading work item types...');
- const adoP = provider as AdoProvider;
+ const adoP = provider as any;
  const adoTypes = await adoP.getWorkItemTypes();
  let hint = '';
  if (p.type) {
@@ -627,8 +627,8 @@ export class PmAgent {
  { title: `Work item type${hint}`, placeHolder: 'Select from your project types', ignoreFocusOut: true }
  );
  if (!picked) { stream.markdown('_Cancelled._'); return { action: 'create_cancelled' }; }
- rawTypeName = picked.value;
- const l2 = picked.value.toLowerCase();
+ rawTypeName = (picked as any).value ?? (picked as any).label ?? String(picked);
+ const l2 = rawTypeName!.toLowerCase();
  if (l2.includes('story') || l2.includes('backlog item') || l2.includes('requirement')) { p.type = 'story'; }
  else if (l2.includes('bug')) { p.type = 'bug'; }
  else if (l2.includes('epic')) { p.type = 'epic'; }
@@ -943,7 +943,7 @@ export class PmAgent {
  let sprints: import('./types').Sprint[] = [];
  try {
  if (platform === 'azuredevops') {
- sprints = await (provider as AdoProvider).getAllSprints();
+ sprints = await (provider as any).getAllSprints();
  } else {
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
  sprints = await (provider as any).getAllSprints();
@@ -1152,7 +1152,7 @@ export class PmAgent {
  let allWorkItemTypes: string[] = ['Task'];
  if (platform === 'azuredevops') {
  try {
- allWorkItemTypes = await (provider as AdoProvider).getWorkItemTypes();
+ allWorkItemTypes = await (provider as any).getWorkItemTypes();
  } catch { /* use default */ }
  }
 
@@ -1503,7 +1503,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  } else {
  // ADO: fetch states for this work item type from the API
  try {
- const adoP = provider as AdoProvider;
+ const adoP = provider as any;
  // Use rawTypeName from the item (exact ADO type) or fall back to a map
  const typeMap: Record<string, string> = {
  story: 'User Story', task: 'Task', bug: 'Bug', epic: 'Epic',
@@ -1584,7 +1584,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
  };
- const result = await provider.addAttachment(key, fileName, Buffer.from(fileBytes), mimeMap[ext] ?? 'application/octet-stream');
+ const result = await provider.addAttachment!(key, fileName, Buffer.from(fileBytes), mimeMap[ext] ?? 'application/octet-stream');
  if (result.success) {
  stream.markdown(formatSuccess(`Attached **${fileName}** to **[${key}]**`));
  } else {
@@ -1829,7 +1829,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  const parent = parents.find(p => p.id === picked.id)!;
  try {
  if (platform === 'azuredevops') {
- await (provider as AdoProvider).addParentLink(child.id, picked.id);
+ await (provider as any).addParentLink(child.id, picked.id);
  } else {
  // Jira: set parent field using the parent's key or id
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1910,7 +1910,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  let sprints: import('./types').Sprint[] = [];
  try {
  if (platform === 'azuredevops') {
- sprints = await (provider as AdoProvider).getAllSprints();
+ sprints = await (provider as any).getAllSprints();
  } else {
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
  sprints = await (provider as any).getAllSprints?.() ?? [];
@@ -1973,7 +1973,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  const wi = opt.item;
  try {
  if (platform === 'azuredevops') {
- const adoP = provider as AdoProvider;
+ const adoP = provider as any;
  const n = wi.id.replace(/^#/, '').replace(/^AB#/i, '');
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
  const cur = await (adoP as any).http(

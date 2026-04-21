@@ -336,6 +336,13 @@ export class AdoProvider {
     return this.map(wi);
   }
 
+  async setAssignee(id: string, userIdOrEmail: string): Promise<void> {
+    const n = id.replace(/^#/, '').replace(/^AB#/i, '');
+    const ops = [{ op: 'replace', path: '/fields/System.AssignedTo', value: userIdOrEmail }];
+    await this.http(`${this.orgUrl}/_apis/wit/workitems/${n}?api-version=7.1`,
+      { method: 'PATCH', body: JSON.stringify(ops), headers: { 'Content-Type': 'application/json-patch+json' } });
+  }
+
   /** Link an existing work item to a parent via Hierarchy-Reverse relation */
   async addParentLink(childId: string, parentId: string): Promise<void> {
     const childNum  = childId.replace(/^#/, '').replace(/^AB#/i, '');
