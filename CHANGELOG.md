@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.1.0] - 2026-04-21
+
+### Features
+
+- GitHub project members, Epic type, date fields for Gantt view and merge
+- GitHub project members, Epic type, date fields for Gantt view
+
 ## [1.0.7] - 2026-04-20
 
 ### Bug Fixes
