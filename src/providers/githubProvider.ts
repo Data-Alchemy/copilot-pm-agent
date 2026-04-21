@@ -364,6 +364,7 @@ export class GitHubProvider {
             labels: input.labels,
             startDate: input.startDate,
             endDate: input.endDate,
+            sprintId: input.sprintId,
           });
         }
       } catch { /* project add is best-effort */ }
@@ -533,26 +534,43 @@ export class GitHubProvider {
     return users;
   }
 
-  // ── Sprints (milestones) ─────────────────────────────────────────────────
+  // ── Sprints (iterations from project, milestones as fallback) ────────────
 
   async getActiveSprint(): Promise<Sprint | null> {
+    // Try project iterations first
+    if (this.projectNumber) {
+      try {
+        const sprints = await this._getProjectIterations();
+        // Find the iteration that contains today
+        const today = new Date().toISOString().split('T')[0];
+        const active = sprints.find(s => s.state === 'active' && s.startDate && s.startDate <= today);
+        if (active) { return active; }
+        // Or just the first active one
+        const first = sprints.find(s => s.state === 'active');
+        if (first) { return first; }
+      } catch { /* fall through to milestones */ }
+    }
+
     try {
       const data = await this.rest<any[]>(
         `/repos/${this.owner}/${this.repo}/milestones?state=open&sort=due_on&direction=asc&per_page=1`
       );
       if (!data?.length) { return null; }
       const m = data[0];
-      return {
-        id: String(m.number),
-        name: m.title,
-        state: 'active',
-        startDate: m.created_at,
-        endDate: m.due_on,
-      };
+      return { id: String(m.number), name: m.title, state: 'active', startDate: m.created_at, endDate: m.due_on };
     } catch { return null; }
   }
 
   async getAllSprints(): Promise<Sprint[]> {
+    // Try project iterations first
+    if (this.projectNumber) {
+      try {
+        const sprints = await this._getProjectIterations();
+        if (sprints.length) { return sprints; }
+      } catch { /* fall through */ }
+    }
+
+    // Fallback: milestones
     try {
       const open = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/milestones?state=open&per_page=50`);
       const closed = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/milestones?state=closed&per_page=20`);
@@ -564,6 +582,48 @@ export class GitHubProvider {
         endDate: m.due_on,
       }));
     } catch { return []; }
+  }
+
+  /** Get iterations from the project's iteration field */
+  private async _getProjectIterations(): Promise<Sprint[]> {
+    const projectId = await this.getProjectId();
+    const fields = await this._getProjectFields(projectId);
+    const iterField = fields.find((f: any) => f?.configuration?.iterations);
+    if (!iterField) { return []; }
+
+    const sprints: Sprint[] = [];
+    const today = new Date().toISOString().split('T')[0];
+
+    // Active/future iterations
+    for (const iter of (iterField.configuration.iterations ?? [])) {
+      const endDate = iter.startDate && iter.duration
+        ? new Date(new Date(iter.startDate).getTime() + iter.duration * 7 * 86400000).toISOString().split('T')[0]
+        : undefined;
+      const isActive = iter.startDate && iter.startDate <= today && (!endDate || endDate >= today);
+      sprints.push({
+        id: iter.id,
+        name: iter.title ?? `Sprint starting ${iter.startDate}`,
+        state: isActive ? 'active' : 'future',
+        startDate: iter.startDate,
+        endDate,
+      });
+    }
+
+    // Completed iterations
+    for (const iter of (iterField.configuration.completedIterations ?? [])) {
+      const endDate = iter.startDate && iter.duration
+        ? new Date(new Date(iter.startDate).getTime() + iter.duration * 7 * 86400000).toISOString().split('T')[0]
+        : undefined;
+      sprints.push({
+        id: iter.id,
+        name: iter.title ?? `Sprint starting ${iter.startDate}`,
+        state: 'closed',
+        startDate: iter.startDate,
+        endDate,
+      });
+    }
+
+    return sprints;
   }
 
   // ── Project field helpers ──────────────────────────────────────────────
@@ -581,7 +641,13 @@ export class GitHubProvider {
               nodes {
                 ... on ProjectV2Field { id name dataType }
                 ... on ProjectV2SingleSelectField { id name dataType options { id name } }
-                ... on ProjectV2IterationField { id name dataType }
+                ... on ProjectV2IterationField {
+                  id name dataType
+                  configuration {
+                    iterations { id title startDate duration }
+                    completedIterations { id title startDate duration }
+                  }
+                }
               }
             }
           }
@@ -592,7 +658,7 @@ export class GitHubProvider {
     return this._projectFields!;
   }
 
-  /** Set ALL project fields on a project item — Status, Size, Estimate, Type, Priority, dates */
+  /** Set ALL project fields on a project item — Status, Size, Estimate, Type, Priority, Iteration, dates */
   async _setProjectFields(projectId: string, itemId: string, input: {
     status?: string;
     type?: string;
@@ -602,6 +668,7 @@ export class GitHubProvider {
     labels?: string[];
     startDate?: string;
     endDate?: string;
+    sprintId?: string;
   }): Promise<void> {
     try {
       const fields = await this._getProjectFields(projectId);
@@ -666,6 +733,26 @@ export class GitHubProvider {
                   }) { projectV2Item { id } }
                 }
               `, { projectId, itemId, fieldId: field.id, value: input.storyPoints });
+            }
+          }
+
+          // ── Iteration fields (Sprint) ──────────────────────────────────
+          else if (field.configuration?.iterations && input.sprintId) {
+            const allIters = [
+              ...(field.configuration.iterations ?? []),
+              ...(field.configuration.completedIterations ?? [])
+            ];
+            const iter = allIters.find((i: any) => i.id === input.sprintId);
+            if (iter) {
+              await this.graphql(`
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId, itemId: $itemId,
+                    fieldId: $fieldId,
+                    value: { iterationId: $iterationId }
+                  }) { projectV2Item { id } }
+                }
+              `, { projectId, itemId, fieldId: field.id, iterationId: iter.id });
             }
           }
 
