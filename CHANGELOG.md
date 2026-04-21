@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [1.1.4] - 2026-04-21
+
+### Bug Fixes
+
+- GitHub iterations from project fields, org issue types, sub-issue ID fix
+
 ## [1.1.3] - 2026-04-21
 
 ### Bug Fixes
