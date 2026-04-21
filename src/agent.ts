@@ -250,12 +250,7 @@ export class PmAgent {
 
  // ── SET PARENT ────────────────────────────────────────────────────────
  case 'parent': {
- if (creds.platform !== 'azuredevops') {
- stream.markdown('Parent linking is currently only supported for Azure DevOps.');
- meta = { action: 'error' };
- break;
- }
- meta = await this.handleSetParent(stream, provider);
+ meta = await this.handleSetParent(stream, provider, creds.platform);
  break;
  }
 
@@ -1782,69 +1777,134 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  provider: ReturnType<typeof createProvider>,
  platform: string = 'azuredevops'
  ): Promise<PmResultMeta> {
- // Step 1: pick the child item
- const childKey = await this.pickWorkItem(stream, provider, 'Which item needs a parent?');
- if (!childKey) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
-
- stream.progress(`Loading ${childKey}...`);
- const child = await provider.getWorkItem(childKey);
- stream.markdown(
- `Setting parent for **[${child.key}](${child.url})** — ${child.title} _(${cap(child.type)})_`
- );
-
- // Step 2: pick the parent — load stories, epics, features
- stream.progress('Loading potential parents...');
- let parents: WorkItem[] = [];
+ // ── Filters: type, status, sprint ──────────────────────────────────
+ let types: string[] = [];
+ let statuses: string[] = [];
+ let sprints: import("./types").Sprint[] = [];
+ try { types = await provider.getWorkItemTypes(); } catch { /* skip */ }
  try {
- const all = await provider.searchWorkItems({ status: 'open', maxResults: 50 } as any);
- parents = all.filter(i =>
- i.key !== child.key &&
- (['story', 'epic', 'feature'].includes(i.type) ||
- (i.rawTypeName ?? '').toLowerCase().match(/story|epic|feature|requirement|backlog/))
- );
- } catch { /* no results */ }
+ if (provider.getWorkItemStates) { statuses = await provider.getWorkItemStates('Task'); }
+ else if (provider.getProjectStatuses) { statuses = await provider.getProjectStatuses(); }
+ } catch { /* skip */ }
+ try { sprints = await provider.getAllSprints(); } catch { /* skip */ }
 
- if (!parents.length) {
- stream.markdown(
- '_No parent items found. Make sure Stories, Epics, or Features exist in the project._'
+ type FQ = vscode.QuickPickItem & { field: string; value: string };
+ const filterOpts: FQ[] = [
+ { label: 'All types', description: 'No type filter', field: 'type', value: '' } as any,
+ ...types.map((t: string) => ({ label: `Type: ${t}`, description: '', field: 'type', value: t })),
+ { label: '── Status ──', description: '', field: '', value: '', kind: vscode.QuickPickItemKind.Separator } as any,
+ { label: 'All statuses', description: 'No status filter', field: 'status', value: '' } as any,
+ ...statuses.map((s: string) => ({ label: `Status: ${s}`, description: '', field: 'status', value: s })),
+ ];
+ if (sprints.length) {
+ filterOpts.push(
+ { label: '── Sprint ──', description: '', field: '', value: '', kind: vscode.QuickPickItemKind.Separator } as any,
+ { label: 'All sprints', description: 'No sprint filter', field: 'sprint', value: '' } as any,
+ ...sprints.map((s: import("./types").Sprint) => ({ label: `Sprint: ${s.name}`, description: s.state, field: 'sprint', value: s.id }))
  );
+ }
+
+ const filters = await vscode.window.showQuickPick(filterOpts, {
+ title: 'Filter items (optional)',
+ canPickMany: true,
+ ignoreFocusOut: true
+ });
+
+ const query: import("./types").WorkItemQuery = { maxResults: 200 };
+ let typeFilter: string | undefined;
+ if (filters?.length) {
+ const tf = filters.find((f: any) => f.field === 'type' && f.value);
+ const sf = filters.find((f: any) => f.field === 'status' && f.value);
+ const sp = filters.find((f: any) => f.field === 'sprint' && f.value);
+ if (sf) { query.status = sf.value; } else { query.status = 'open'; }
+ if (sp) { query.sprintId = sp.value; }
+ if (tf) { typeFilter = tf.value; }
+ } else {
+ query.status = 'open';
+ }
+
+ // ── Load items ──────────────────────────────────────────────────────
+ stream.progress('Loading items...');
+ let all: WorkItem[] = [];
+ try {
+ all = await provider.searchWorkItems(query);
+ } catch { /* empty */ }
+
+ if (typeFilter) {
+ const tf = typeFilter.toLowerCase();
+ all = all.filter(i => (i.rawTypeName ?? '').toLowerCase() === tf || i.type.toLowerCase() === tf);
+ }
+
+ if (!all.length) {
+ stream.markdown('_No items found matching the filters._');
  return { action: 'error' };
  }
 
- type ParentOpt = { label: string; description: string; id: string };
- const opts: ParentOpt[] = parents.map(p => ({
- label:       `${p.key} — ${p.title}`,
- description: `${cap(p.type)} · ${p.status}`,
- id:          p.id
+ // ── Pick children (multi-select) ───────────────────────────────────
+ type ChildOpt = vscode.QuickPickItem & { wi: WorkItem };
+ const childOpts: ChildOpt[] = all.map(wi => ({
+ label: `${wi.key} — ${wi.title}`,
+ description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}${wi.sprint ? ' · ' + wi.sprint : ''}`,
+ wi
  }));
 
- const picked = await vscode.window.showQuickPick(opts, {
- title:          `Select parent for ${child.key}`,
- placeHolder:    'Search by key or title',
+ const selectedChildren = await vscode.window.showQuickPick(childOpts, {
+ title: `Select items to assign a parent to (${all.length} loaded)`,
+ canPickMany: true,
+ matchOnDescription: true,
+ ignoreFocusOut: true
+ });
+ if (!selectedChildren?.length) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
+
+ // ── Pick parent (exclude selected children) ────────────────────────
+ const childKeys = new Set(selectedChildren.map(c => c.wi.key));
+ let parentCandidates = [...all];
+ if (all.length < 50) {
+ try {
+ const more = await provider.searchWorkItems({ status: 'open', maxResults: 200 });
+ const existing = new Set(all.map(i => i.key));
+ for (const item of more) { if (!existing.has(item.key)) { parentCandidates.push(item); } }
+ } catch { /* use what we have */ }
+ }
+ const parents = parentCandidates.filter(i => !childKeys.has(i.key));
+
+ if (!parents.length) {
+ stream.markdown('_No eligible parent items found._');
+ return { action: 'error' };
+ }
+
+ type ParentOpt = vscode.QuickPickItem & { wi: WorkItem };
+ const parentOpts: ParentOpt[] = parents.map(p => ({
+ label: `${p.key} — ${p.title}`,
+ description: `${p.rawTypeName ?? cap(p.type)} · ${p.status}`,
+ wi: p
+ }));
+
+ const picked = await vscode.window.showQuickPick(parentOpts, {
+ title: `Select parent for ${selectedChildren.length} item${selectedChildren.length !== 1 ? 's' : ''}`,
+ matchOnDescription: true,
  ignoreFocusOut: true
  });
  if (!picked) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
 
- stream.progress('Linking...');
- const parent = parents.find(p => p.id === picked.id)!;
+ // ── Link all children to the parent ────────────────────────────────
+ stream.progress(`Linking ${selectedChildren.length} items to ${picked.wi.key}...`);
+ let linked = 0, failed = 0;
+ for (const child of selectedChildren) {
  try {
- if (platform === 'azuredevops') {
- await (provider as any).addParentLink(child.id, picked.id);
- } else {
- // Jira: set parent field using the parent's key or id
- // eslint-disable-next-line @typescript-eslint/no-explicit-any
- await (provider as any).addParentLink(child.key, parent.key || picked.id);
+ const childId = platform === 'azuredevops' ? child.wi.id : (child.wi.key || child.wi.id);
+ const parentId = platform === 'azuredevops' ? picked.wi.id : (picked.wi.key || picked.wi.id);
+ await provider.addParentLink(childId, parentId);
+ linked++;
+ } catch {
+ failed++;
  }
- stream.markdown(
- formatSuccess(
- `**[${child.key}](${child.url})** is now a child of **[${parent.key}](${parent.url})** — ${parent.title}`
- )
- );
- return { action: 'opened', itemKey: child.key };
- } catch (e: unknown) {
- stream.markdown(formatError(e instanceof Error ? e.message : String(e)));
- return { action: 'error' };
  }
+
+ const msg = `Linked ${linked} item${linked !== 1 ? 's' : ''} to **[${picked.wi.key}](${picked.wi.url})** — ${picked.wi.title}` +
+ (failed ? ` (${failed} failed)` : '');
+ stream.markdown(formatSuccess(msg));
+ return { action: 'opened', itemKey: picked.wi.key };
  }
 
  // ── MOVE (change sprint / iteration) ─────────────────────────────────────

@@ -966,39 +966,109 @@ export class CommandRunner {
   async parent() {
     const { provider, creds } = await this.getProvider();
 
-    // Pick children to assign a parent to (multi-select)
-    const all = await vscode.window.withProgress(
+    // ── Filters: type, status, sprint ────────────────────────────────────
+    // Get available filter values
+    let types: string[] = [];
+    let statuses: string[] = [];
+    let sprints: import('./types').Sprint[] = [];
+    try { types = await provider.getWorkItemTypes(); } catch { /* skip */ }
+    try {
+      if (provider.getWorkItemStates) { statuses = await provider.getWorkItemStates('Task'); }
+      else if (provider.getProjectStatuses) { statuses = await provider.getProjectStatuses(); }
+      else if (provider.getAvailableTransitions) { statuses = ['open', 'closed']; }
+    } catch { /* skip */ }
+    try { sprints = await provider.getAllSprints(); } catch { /* skip */ }
+
+    type FQ = vscode.QuickPickItem & { field: string; value: string };
+    const filterOpts: FQ[] = [
+      { label: 'All types',    description: 'No type filter',   field: 'type',   value: '', picked: true } as any,
+      ...types.map(t =>   ({ label: `Type: ${t}`,      description: '', field: 'type',   value: t })),
+      { label: '── Status ──', description: '', field: '', value: '', kind: vscode.QuickPickItemKind.Separator } as any,
+      { label: 'All statuses', description: 'No status filter', field: 'status', value: '', picked: true } as any,
+      ...statuses.map(s => ({ label: `Status: ${s}`,   description: '', field: 'status', value: s })),
+    ];
+    if (sprints.length) {
+      filterOpts.push(
+        { label: '── Sprint ──', description: '', field: '', value: '', kind: vscode.QuickPickItemKind.Separator } as any,
+        { label: 'All sprints',  description: 'No sprint filter', field: 'sprint', value: '' } as any,
+        ...sprints.map(s => ({ label: `Sprint: ${s.name}`, description: s.state, field: 'sprint', value: s.id }))
+      );
+    }
+
+    const filters = await vscode.window.showQuickPick(filterOpts, {
+      title: 'Filter items (optional — select filters then press OK)',
+      canPickMany: true,
+      ignoreFocusOut: true
+    });
+
+    // Build query from filters
+    const query: import('./types').WorkItemQuery = { maxResults: 200 };
+    if (filters?.length) {
+      const typeFilter = filters.find(f => f.field === 'type' && f.value);
+      const statusFilter = filters.find(f => f.field === 'status' && f.value);
+      const sprintFilter = filters.find(f => f.field === 'sprint' && f.value);
+      if (statusFilter) { query.status = statusFilter.value; }
+      else { query.status = 'open'; }
+      if (sprintFilter) { query.sprintId = sprintFilter.value; }
+    } else {
+      query.status = 'open';
+    }
+
+    // Load items
+    let all = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: 'Loading items...' },
-      () => provider.searchWorkItems({ status: 'open', maxResults: 100 })
+      () => provider.searchWorkItems(query)
     ).then(v => v, () => [] as import('./types').WorkItem[]);
 
+    // Apply type filter client-side (search API may not support type filtering)
+    if (filters?.length) {
+      const typeFilter = filters.find(f => f.field === 'type' && f.value);
+      if (typeFilter) {
+        const tf = typeFilter.value.toLowerCase();
+        all = all.filter(i =>
+          (i.rawTypeName ?? '').toLowerCase() === tf ||
+          i.type.toLowerCase() === tf
+        );
+      }
+    }
+
     if (!all.length) {
-      vscode.window.showErrorMessage('No open items found.');
+      vscode.window.showErrorMessage('No items found matching the filters.');
       return;
     }
 
+    // ── Pick children (multi-select) ──────────────────────────────────────
     type IQ = vscode.QuickPickItem & { wi: import('./types').WorkItem };
     const childOpts: IQ[] = all.map(wi => ({
       label:       `${wi.key} — ${wi.title}`,
-      description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}`,
+      description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}${wi.sprint ? ' · ' + wi.sprint : ''}`,
       wi
     }));
 
     const selectedChildren = await vscode.window.showQuickPick<IQ>(childOpts, {
-      title:       'Select items to assign a parent to',
+      title:       `Select items to assign a parent to (${all.length} loaded)`,
       canPickMany: true,
       matchOnDescription: true,
       ignoreFocusOut: true
     });
     if (!selectedChildren?.length) { return; }
 
-    // Pick a parent from stories, epics, features (exclude selected children)
+    // ── Pick parent (exclude selected children) ──────────────────────────
     const childKeys = new Set(selectedChildren.map(c => c.wi.key));
-    const parents = all.filter(i =>
-      !childKeys.has(i.key) &&
-      (['story', 'epic', 'feature', 'task'].includes(i.type) ||
-       !!(i.rawTypeName ?? '').toLowerCase().match(/story|epic|feature|requirement|backlog|task/))
-    );
+    // For parent, show ALL items (not just filtered) so user can pick any eligible parent
+    let parentCandidates = all;
+    if (all.length < 50) {
+      // Reload without filters to get more parent candidates
+      try {
+        const moreItems = await provider.searchWorkItems({ status: 'open', maxResults: 200 });
+        const existing = new Set(all.map(i => i.key));
+        for (const item of moreItems) {
+          if (!existing.has(item.key)) { parentCandidates.push(item); }
+        }
+      } catch { /* use what we have */ }
+    }
+
+    const parents = parentCandidates.filter(i => !childKeys.has(i.key));
 
     if (!parents.length) {
       vscode.window.showErrorMessage('No eligible parent items found.');
@@ -1019,7 +1089,7 @@ export class CommandRunner {
     });
     if (!picked) { return; }
 
-    // Link all selected children to the parent
+    // ── Link ──────────────────────────────────────────────────────────────
     let linked = 0, failed = 0;
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Linking ${selectedChildren.length} items to ${picked.item.key}...` },
@@ -1027,7 +1097,6 @@ export class CommandRunner {
         for (const child of selectedChildren) {
           progress.report({ message: `${child.wi.key}...` });
           try {
-            // Use the provider's addParentLink — works for all platforms
             const childId = creds.platform === 'azuredevops' ? child.wi.id : (child.wi.key || child.wi.id);
             const parentId = creds.platform === 'azuredevops' ? picked.item.id : (picked.item.key || picked.item.id);
             await provider.addParentLink(childId, parentId);
