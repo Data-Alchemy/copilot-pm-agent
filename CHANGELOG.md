@@ -6,6 +6,18 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [2.0.0] - 2026-04-21
+
+### Breaking Changes
+
+- IProvider interface, registry factory, multi-select parent, GitHub project fields and merge'
+- IProvider interface, registry factory, multi-select parent, GitHub project fields
+
+### Features
+
+- IProvider interface, registry factory, multi-select parent, GitHub project fields and merge'
+- IProvider interface, registry factory, multi-select parent, GitHub project fields
+
 ## [1.1.4] - 2026-04-21
 
 ### Bug Fixes
