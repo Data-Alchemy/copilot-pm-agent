@@ -202,37 +202,54 @@ async function callAi(config: AiConfig, system: string, user: string, requestMod
     raw = await callExternal(config, system, user);
   }
 
-  // Strip markdown fences
-  let clean = raw
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
+  // Strip markdown fences and extract JSON
+  let clean = raw.trim();
 
+  // Remove markdown code fences (```json ... ``` or ``` ... ```)
+  const fenceMatch = clean.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    clean = fenceMatch[1].trim();
+  } else {
+    // No fences — strip any leading/trailing fences that weren't closed
+    clean = clean
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
+  }
+
+  // Try direct parse first
   try {
     return JSON.parse(clean);
-  } catch {
-    // Truncated JSON — try to repair
-    // Find the last complete object/array element
-    const lastBrace = Math.max(clean.lastIndexOf('}'), clean.lastIndexOf(']'));
-    if (lastBrace > 0) {
-      let repaired = clean.slice(0, lastBrace + 1);
-      // Close any unclosed arrays/objects
-      const opens = (repaired.match(/\[/g) ?? []).length;
-      const closes = (repaired.match(/\]/g) ?? []).length;
-      for (let i = 0; i < opens - closes; i++) { repaired += ']'; }
-      const openBraces = (repaired.match(/\{/g) ?? []).length;
-      const closeBraces = (repaired.match(/\}/g) ?? []).length;
-      for (let i = 0; i < openBraces - closeBraces; i++) { repaired += '}'; }
-      try { return JSON.parse(repaired); } catch { /* fall through */ }
-    }
-    // Extract any JSON array from the response
-    const arrayMatch = clean.match(/\[[\s\S]*\]/);
-    if (arrayMatch) {
-      try { return JSON.parse(arrayMatch[0]); } catch { /* fall through */ }
-    }
-    throw new Error(`Invalid JSON from AI: ${clean.slice(0, 100)}...`);
+  } catch { /* try extraction */ }
+
+  // Extract JSON object { ... } from the response (skip preamble text)
+  const objMatch = clean.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    try { return JSON.parse(objMatch[0]); } catch { /* try repair */ }
   }
+
+  // Extract JSON array [ ... ] from the response
+  const arrMatch = clean.match(/\[[\s\S]*\]/);
+  if (arrMatch) {
+    try { return JSON.parse(arrMatch[0]); } catch { /* try repair */ }
+  }
+
+  // Truncated JSON — try to repair by closing brackets
+  const target = objMatch?.[0] ?? arrMatch?.[0] ?? clean;
+  const lastBrace = Math.max(target.lastIndexOf('}'), target.lastIndexOf(']'));
+  if (lastBrace > 0) {
+    let repaired = target.slice(0, lastBrace + 1);
+    const opens = (repaired.match(/\[/g) ?? []).length;
+    const closes = (repaired.match(/\]/g) ?? []).length;
+    for (let i = 0; i < opens - closes; i++) { repaired += ']'; }
+    const openBraces = (repaired.match(/\{/g) ?? []).length;
+    const closeBraces = (repaired.match(/\}/g) ?? []).length;
+    for (let i = 0; i < openBraces - closeBraces; i++) { repaired += '}'; }
+    try { return JSON.parse(repaired); } catch { /* fall through */ }
+  }
+
+  throw new Error(`Invalid JSON from AI: ${clean.slice(0, 100)}...`);
 }
 
 // ── Public AI functions ───────────────────────────────────────────────────────
