@@ -110,7 +110,9 @@ export class WorkItemPanel {
         ? row('Labels', item.labels.map(l =>
             `<span class="tag">${escapeHtml(l)}</span>`).join(' '))
         : '',
-      row('Platform', item.platform === 'jira' ? 'Jira' : 'Azure DevOps'),
+      row('Platform', item.platform === 'jira' ? 'Jira' : item.platform === 'github' ? 'GitHub' : 'Azure DevOps'),
+      item.startDate ? row('Start Date', item.startDate.slice(0, 10)) : '',
+      item.endDate   ? row('End Date', item.endDate.slice(0, 10)) : '',
       item.createdAt ? row('Created', item.createdAt.slice(0, 10)) : '',
       item.updatedAt ? row('Updated', item.updatedAt.slice(0, 10)) : '',
     ].filter(Boolean).join('\n');
@@ -137,7 +139,7 @@ export class WorkItemPanel {
 </style>
 </head>
 <body>
-<div class="key">${item.platform === 'jira' ? 'Jira' : 'Azure DevOps'} &middot; ${escapeHtml(item.projectKey)}</div>
+<div class="key">${item.platform === 'jira' ? 'Jira' : item.platform === 'github' ? 'GitHub' : 'Azure DevOps'} &middot; ${escapeHtml(item.projectKey)}</div>
 <h1>${escapeHtml(item.title)}</h1>
 <div class="key">${item.key}</div>
 <table>${rows}</table>

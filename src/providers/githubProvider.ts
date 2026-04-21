@@ -145,6 +145,10 @@ export class GitHubProvider {
                         name
                         field { ... on ProjectV2SingleSelectField { name } }
                       }
+                      ... on ProjectV2ItemFieldDateValue {
+                        date
+                        field { ... on ProjectV2Field { name } }
+                      }
                     }
                   }
                   content {
@@ -172,12 +176,21 @@ export class GitHubProvider {
         const content = node?.content;
         if (!content?.number) { continue; } // skip drafts/PRs without number
 
-        // Extract project-specific status from field values
+        // Extract project-specific status and dates from field values
         let projectStatus = content.state === 'CLOSED' ? 'Closed' : 'Open';
+        let startDate: string | undefined;
+        let endDate: string | undefined;
         for (const fv of (node.fieldValues?.nodes ?? [])) {
-          if (fv?.field?.name?.toLowerCase() === 'status' && fv?.name) {
+          const fieldName = (fv?.field?.name ?? '').toLowerCase();
+          if (fieldName === 'status' && fv?.name) {
             projectStatus = fv.name;
-            break;
+          }
+          if (fv?.date) {
+            if (fieldName === 'start date' || fieldName === 'start' || fieldName === 'startdate') {
+              startDate = fv.date;
+            } else if (fieldName === 'end date' || fieldName === 'due date' || fieldName === 'target date' || fieldName === 'end' || fieldName === 'due' || fieldName === 'enddate') {
+              endDate = fv.date;
+            }
           }
         }
 
@@ -213,6 +226,8 @@ export class GitHubProvider {
           projectKey: `${this.owner}/${this.repo}`,
           createdAt: content.createdAt,
           updatedAt: content.updatedAt,
+          startDate,
+          endDate,
         });
       }
 
@@ -322,17 +337,23 @@ export class GitHubProvider {
 
     const item = this.mapIssue(issue);
 
-    // Add to GitHub Project if configured
+    // Add to GitHub Project if configured + set project fields (dates, status)
     if (this.projectNumber) {
       try {
         const projectId = await this.getProjectId();
-        await this.graphql(`
+        const addResult = await this.graphql<any>(`
           mutation($projectId: ID!, $contentId: ID!) {
             addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
               item { id }
             }
           }
         `, { projectId, contentId: issue.node_id });
+
+        const projectItemId = addResult?.addProjectV2ItemById?.item?.id;
+        if (projectItemId) {
+          // Set date fields on the project item
+          await this._setProjectDates(projectId, projectItemId, input.startDate, input.endDate);
+        }
       } catch { /* project add is best-effort */ }
     }
 
@@ -435,7 +456,29 @@ export class GitHubProvider {
   // ── Members ──────────────────────────────────────────────────────────────
 
   async getProjectMembers(): Promise<User[]> {
-    // Try project-specific members via GraphQL (assignees from project items)
+    const seen = new Set<string>();
+    const users: User[] = [];
+
+    const addUser = (login: string, email?: string) => {
+      if (login && !seen.has(login)) {
+        seen.add(login);
+        users.push({ id: login, displayName: login, email: email ?? undefined });
+      }
+    };
+
+    // 1. Always include the authenticated user (token owner)
+    try {
+      const me = await this.rest<any>('/user');
+      addUser(me.login, me.email);
+    } catch { /* skip */ }
+
+    // 2. Get assignable users from the repo (people who CAN be assigned)
+    try {
+      const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/assignees?per_page=100`);
+      for (const u of (data ?? [])) { addUser(u.login, u.email); }
+    } catch { /* skip */ }
+
+    // 3. Get users from project items (people who ARE assigned to items)
     if (this.projectNumber) {
       try {
         const projectId = await this.getProjectId();
@@ -447,14 +490,7 @@ export class GitHubProvider {
                   nodes {
                     content {
                       ... on Issue {
-                        assignees(first: 10) {
-                          nodes { login avatarUrl email: databaseId }
-                        }
-                      }
-                      ... on PullRequest {
-                        assignees(first: 10) {
-                          nodes { login avatarUrl }
-                        }
+                        assignees(first: 10) { nodes { login } }
                       }
                     }
                   }
@@ -463,40 +499,23 @@ export class GitHubProvider {
             }
           }
         `, { projectId });
-        const seen = new Set<string>();
-        const users: User[] = [];
-        const items = data?.node?.items?.nodes ?? [];
-        for (const item of items) {
-          const assignees = item?.content?.assignees?.nodes ?? [];
-          for (const a of assignees) {
-            if (a?.login && !seen.has(a.login)) {
-              seen.add(a.login);
-              users.push({ id: a.login, displayName: a.login, email: undefined });
-            }
+        for (const item of (data?.node?.items?.nodes ?? [])) {
+          for (const a of (item?.content?.assignees?.nodes ?? [])) {
+            addUser(a?.login);
           }
         }
-        if (users.length) { return users; }
-      } catch { /* fall through */ }
+      } catch { /* skip */ }
     }
 
-    // Fallback: repo collaborators
-    try {
-      const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/collaborators?per_page=100`);
-      return (data ?? []).map((u: any) => ({
-        id: u.login,
-        displayName: u.login,
-        email: u.email ?? undefined,
-      }));
-    } catch {
-      // Fallback: org members
+    // 4. Fallback: org members
+    if (!users.length) {
       try {
         const data = await this.rest<any[]>(`/orgs/${this.owner}/members?per_page=100`);
-        return (data ?? []).map((u: any) => ({
-          id: u.login,
-          displayName: u.login,
-        }));
-      } catch { return []; }
+        for (const u of (data ?? [])) { addUser(u.login); }
+      } catch { /* skip */ }
     }
+
+    return users;
   }
 
   // ── Sprints (milestones) ─────────────────────────────────────────────────
@@ -530,6 +549,61 @@ export class GitHubProvider {
         endDate: m.due_on,
       }));
     } catch { return []; }
+  }
+
+  // ── Project field helpers ──────────────────────────────────────────────
+
+  private _projectFields: any[] | null = null;
+
+  /** Get all fields from the project (cached) */
+  private async _getProjectFields(projectId: string): Promise<any[]> {
+    if (this._projectFields) { return this._projectFields; }
+    const data = await this.graphql<any>(`
+      query($projectId: ID!) {
+        node(id: $projectId) {
+          ... on ProjectV2 {
+            fields(first: 50) {
+              nodes {
+                ... on ProjectV2Field { id name dataType }
+                ... on ProjectV2SingleSelectField { id name dataType options { id name } }
+                ... on ProjectV2IterationField { id name dataType }
+              }
+            }
+          }
+        }
+      }
+    `, { projectId });
+    this._projectFields = data?.node?.fields?.nodes ?? [];
+    return this._projectFields!;
+  }
+
+  /** Set date fields on a project item */
+  private async _setProjectDates(projectId: string, itemId: string, startDate?: string, endDate?: string): Promise<void> {
+    if (!startDate && !endDate) { return; }
+    try {
+      const fields = await this._getProjectFields(projectId);
+      for (const field of fields) {
+        if (!field?.id || field.dataType !== 'DATE') { continue; }
+        const name = (field.name ?? '').toLowerCase();
+        let dateValue: string | undefined;
+        if ((name === 'start date' || name === 'start' || name === 'startdate') && startDate) {
+          dateValue = startDate;
+        } else if ((name === 'end date' || name === 'due date' || name === 'target date' || name === 'end' || name === 'due' || name === 'enddate') && endDate) {
+          dateValue = endDate;
+        }
+        if (dateValue) {
+          await this.graphql(`
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Date!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId, itemId: $itemId,
+                fieldId: $fieldId,
+                value: { date: $value }
+              }) { projectV2Item { id } }
+            }
+          `, { projectId, itemId, fieldId: field.id, value: dateValue });
+        }
+      }
+    } catch { /* date setting is best-effort */ }
   }
 
   // ── Projects ─────────────────────────────────────────────────────────────
@@ -576,7 +650,18 @@ export class GitHubProvider {
   // ── Work item types (labels) ─────────────────────────────────────────────
 
   async getWorkItemTypes(): Promise<string[]> {
-    // Try to get labels actually used in the project
+    // Standard issue types that GitHub supports via labels
+    const types = new Set<string>(['Epic', 'Task', 'Bug', 'Story', 'Feature']);
+
+    // Add labels from the repo
+    try {
+      const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/labels?per_page=100`);
+      for (const l of (data ?? [])) {
+        types.add(String(l.name));
+      }
+    } catch { /* skip */ }
+
+    // Add labels actually used in the project
     if (this.projectNumber) {
       try {
         const projectId = await this.getProjectId();
@@ -597,25 +682,25 @@ export class GitHubProvider {
             }
           }
         `, { projectId });
-        const seen = new Set<string>();
-        const items = data?.node?.items?.nodes ?? [];
-        for (const item of items) {
-          const labels = item?.content?.labels?.nodes ?? [];
-          for (const l of labels) {
-            if (l?.name) { seen.add(l.name); }
+        for (const item of (data?.node?.items?.nodes ?? [])) {
+          for (const l of (item?.content?.labels?.nodes ?? [])) {
+            if (l?.name) { types.add(l.name); }
           }
         }
-        if (seen.size) { return [...seen].sort(); }
-      } catch { /* fall through */ }
+      } catch { /* skip */ }
     }
 
-    // Fallback: repo labels
-    try {
-      const data = await this.rest<any[]>(`/repos/${this.owner}/${this.repo}/labels?per_page=100`);
-      return (data ?? []).map((l: any) => String(l.name));
-    } catch {
-      return ['bug', 'enhancement', 'task', 'epic', 'question', 'documentation'];
-    }
+    // Sort: standard types first, then alphabetical
+    const standard = ['Epic', 'Story', 'Task', 'Bug', 'Feature'];
+    const sorted = [...types].sort((a, b) => {
+      const ai = standard.indexOf(a);
+      const bi = standard.indexOf(b);
+      if (ai !== -1 && bi !== -1) { return ai - bi; }
+      if (ai !== -1) { return -1; }
+      if (bi !== -1) { return 1; }
+      return a.localeCompare(b);
+    });
+    return sorted;
   }
 
   // ── Project status field options (Projects v2 custom statuses) ──────────

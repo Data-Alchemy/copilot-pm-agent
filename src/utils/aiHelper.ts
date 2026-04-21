@@ -203,13 +203,36 @@ async function callAi(config: AiConfig, system: string, user: string, requestMod
   }
 
   // Strip markdown fences
-  const clean = raw
+  let clean = raw
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
     .replace(/```\s*$/i, '')
     .trim();
 
-  return JSON.parse(clean);
+  try {
+    return JSON.parse(clean);
+  } catch {
+    // Truncated JSON — try to repair
+    // Find the last complete object/array element
+    const lastBrace = Math.max(clean.lastIndexOf('}'), clean.lastIndexOf(']'));
+    if (lastBrace > 0) {
+      let repaired = clean.slice(0, lastBrace + 1);
+      // Close any unclosed arrays/objects
+      const opens = (repaired.match(/\[/g) ?? []).length;
+      const closes = (repaired.match(/\]/g) ?? []).length;
+      for (let i = 0; i < opens - closes; i++) { repaired += ']'; }
+      const openBraces = (repaired.match(/\{/g) ?? []).length;
+      const closeBraces = (repaired.match(/\}/g) ?? []).length;
+      for (let i = 0; i < openBraces - closeBraces; i++) { repaired += '}'; }
+      try { return JSON.parse(repaired); } catch { /* fall through */ }
+    }
+    // Extract any JSON array from the response
+    const arrayMatch = clean.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try { return JSON.parse(arrayMatch[0]); } catch { /* fall through */ }
+    }
+    throw new Error(`Invalid JSON from AI: ${clean.slice(0, 100)}...`);
+  }
 }
 
 // ── Public AI functions ───────────────────────────────────────────────────────

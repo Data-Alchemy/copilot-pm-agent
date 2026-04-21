@@ -23,6 +23,8 @@ export interface WorkItem {
   projectKey:   string;
   createdAt?:   string;
   updatedAt?:   string;
+  startDate?:   string;
+  endDate?:     string;
   comments?:    Comment[];
 }
 
@@ -66,6 +68,8 @@ export interface CreateWorkItemInput {
   labels?:      string[];
   sprintId?:    string;
   parentId?:    string;        // parent work item key or ID
+  startDate?:   string;        // ISO date e.g. 2024-03-15
+  endDate?:     string;        // ISO date e.g. 2024-04-15
   customFields?: Record<string, unknown>; // extra fields (Jira required custom fields)
 }
 

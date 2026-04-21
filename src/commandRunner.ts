@@ -220,6 +220,12 @@ export class CommandRunner {
       if (!states.length) {
         states = ['New', 'Active', 'Resolved', 'Closed'];
       }
+    } else if (creds.platform === 'github') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        states = await (provider as any).getProjectStatuses?.() ?? [];
+      } catch { /* fall through */ }
+      if (!states.length) { states = ['Open', 'Closed']; }
     } else {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -593,13 +599,15 @@ export class CommandRunner {
     }
 
     // ── 2. Title ──────────────────────────────────────────────────────────
-    const title = await vscode.window.showInputBox({
+    let title = await vscode.window.showInputBox({
       title:          `${rawTypeName ?? cap(workItemType)} title`,
       prompt:         'Short, descriptive title',
       placeHolder:    'e.g. User can reset password via email',
       ignoreFocusOut: true
     });
     if (!title?.trim()) { return; }
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    let titleStr = title!.trim();
 
     // ── 3. Notes / description ────────────────────────────────────────────
     const notes = await vscode.window.showInputBox({
@@ -623,7 +631,7 @@ export class CommandRunner {
         const { enhanceTicket } = await import('./utils/aiHelper');
         const enhancement = await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Enhancing with AI...' },
-          () => enhanceTicket(aiCfg as any, rawTypeName ?? cap(workItemType), title.trim(), notes ?? '', platform, undefined)
+          () => enhanceTicket(aiCfg as any, rawTypeName ?? cap(workItemType), titleStr, notes ?? '', platform, undefined)
         );
         if (enhancement) {
           description        = platform === 'azuredevops' ? `<p>${enhancement.what}</p>` : enhancement.what;
@@ -640,7 +648,7 @@ export class CommandRunner {
 
     // ADO requires Description to be non-empty for most work item types
     if (!description && platform === 'azuredevops') {
-      description = `<p>${title.trim()}</p>`;
+      description = `<p>${titleStr}</p>`;
     }
 
     // ── 5. Story points ───────────────────────────────────────────────────
@@ -748,14 +756,47 @@ export class CommandRunner {
       }
     } catch { /* sprints unavailable — skip */ }
 
+    // ── 8b. Dates (for GitHub Projects Gantt view) ─────────────────────────
+    let startDate: string | undefined;
+    let endDate: string | undefined;
+    if (platform === 'github') {
+      const addDates = await vscode.window.showQuickPick(
+        [{ label: 'Yes — set start/end dates', value: 'yes' }, { label: 'Skip dates', value: 'no' }],
+        { title: 'Add dates? (for Gantt/timeline view)', ignoreFocusOut: true }
+      );
+      if (addDates?.value === 'yes') {
+        const today = new Date().toISOString().split('T')[0];
+        const startInput = await vscode.window.showInputBox({
+          title: 'Start date',
+          prompt: 'YYYY-MM-DD format',
+          value: today,
+          ignoreFocusOut: true,
+          validateInput: (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? null : 'Use YYYY-MM-DD format'
+        });
+        if (startInput) { startDate = startInput.trim(); }
+
+        const nextWeek = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+        const endInput = await vscode.window.showInputBox({
+          title: 'End date',
+          prompt: 'YYYY-MM-DD format',
+          value: nextWeek,
+          ignoreFocusOut: true,
+          validateInput: (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? null : 'Use YYYY-MM-DD format'
+        });
+        if (endInput) { endDate = endInput.trim(); }
+      }
+    }
+
     // ── 9. Confirm ────────────────────────────────────────────────────────
     const confirmLines = [
       `Type:     ${rawTypeName ?? cap(workItemType)}`,
-      `Title:    ${title.trim()}`,
+      `Title:    ${titleStr}`,
       storyPoints ? `Points:   ${storyPoints}` : '',
       priority    ? `Priority: ${priority}` : '',
-      assigneeId  ? `Assignee: ${members.find(m => m.id === assigneeId)?.displayName ?? assigneeId}` : 'Assignee: unassigned',
+      assigneeId  ? `Assignee: ${members.find((m: any) => m.id === assigneeId)?.displayName ?? assigneeId}` : 'Assignee: unassigned',
       sprintId    ? `Sprint:   ${sprintId}` : 'Sprint:   backlog',
+      startDate   ? `Start:    ${startDate}` : '',
+      endDate     ? `End:      ${endDate}` : '',
     ].filter(Boolean).join('\n');
 
     const confirm = await vscode.window.showQuickPick(
@@ -817,28 +858,56 @@ export class CommandRunner {
       if (!Object.keys(customFields).length) { customFields = undefined; }
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const created: import('./types').WorkItem = await (provider as any).createWorkItem({
-      type:               workItemType as import('./types').WorkItemType,
-      title:              title.trim(),
-      description,
-      acceptanceCriteria,
-      storyPoints,
-      priority,
-      assigneeId,
-      sprintId:           platform === 'azuredevops' ? iterationPath : sprintId,
-      rawTypeName,
-      customFields
-    });
-    void vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Creating…` }, () => Promise.resolve());
+    // ── CREATE with retry on failure ──────────────────────────────────────
+    let created: import('./types').WorkItem | null = null;
+    let retrying = true;
+    while (retrying) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        created = await (provider as any).createWorkItem({
+          type:               workItemType as import('./types').WorkItemType,
+          title:              titleStr,
+          description,
+          acceptanceCriteria,
+          storyPoints,
+          priority,
+          assigneeId,
+          sprintId:           platform === 'azuredevops' ? iterationPath : sprintId,
+          rawTypeName,
+          startDate,
+          endDate,
+          customFields
+        });
+        retrying = false;
+      } catch (createErr) {
+        const errMsg = createErr instanceof Error ? createErr.message : String(createErr);
+        const action = await vscode.window.showErrorMessage(
+          `Create failed: ${errMsg.slice(0, 150)}`,
+          'Retry', 'Edit Title', 'Cancel'
+        );
+        if (action === 'Retry') {
+          continue;
+        } else if (action === 'Edit Title') {
+          const newTitle = await vscode.window.showInputBox({
+            title: 'Edit title before retry',
+            value: titleStr,
+            ignoreFocusOut: true
+          });
+          if (newTitle?.trim()) {
+            titleStr = newTitle.trim();
+            continue;
+          }
+        }
+        return; // cancelled
+      }
+    }
 
     const choice = await vscode.window.showInformationMessage(
-      `Created ${created.key} — ${created.title}`,
+      `Created ${created!.key} — ${created!.title}`,
       'Open in Browser', 'Close'
     );
     if (choice === 'Open in Browser') {
-      await vscode.env.openExternal(vscode.Uri.parse(created.url));
+      await vscode.env.openExternal(vscode.Uri.parse(created!.url));
     }
   }
 
@@ -1415,9 +1484,71 @@ export class CommandRunner {
     const summary = lines.join('\n');
     this._lastMigrateResult = summary;
 
-    vscode.window.showInformationMessage(
-      `Migration complete: ${moved} created, ${failed} failed.`
-    );
+    if (failed > 0) {
+      const retryAction = await vscode.window.showWarningMessage(
+        `Migration: ${moved} created, ${failed} failed.`,
+        'Retry Failed', 'View Details', 'Close'
+      );
+      if (retryAction === 'Retry Failed') {
+        // Re-run migration with only the failed items
+        const failedSrcKeys = failedKeys.map(k => k.split(':')[0].trim());
+        const retryItems = selectedItems.filter(i => failedSrcKeys.includes(i.wi.key));
+        if (retryItems.length) {
+          let retryMoved = 0, retryFailed = 0;
+          const retryCreated: string[] = [];
+          const retryFailedKeys: string[] = [];
+          await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: `Retrying ${retryItems.length} failed items...` },
+            async progress => {
+              for (let idx = 0; idx < retryItems.length; idx++) {
+                const src = retryItems[idx].wi;
+                progress.report({ message: `Retry ${idx+1}/${retryItems.length}: ${src.key}` });
+                try {
+                  const full = await srcProvider.getWorkItem(src.key);
+                  const srcTypeName = full.rawTypeName ?? cap(full.type);
+                  const dstTypeName = typeMap[srcTypeName] ?? cap(full.type);
+                  const cleanDesc = stripHtml(full.description ?? '');
+                  let desc = fields.has('description') ? cleanDesc : undefined;
+                  if (!desc && direction.includes('jira')) { desc = full.title; }
+                  let assigneeId2: string | undefined;
+                  if (fields.has('assignee') && full.assignee?.email) {
+                    try {
+                      const match = dstMembers.find((m: any) =>
+                        m.email?.toLowerCase() === full.assignee?.email?.toLowerCase()
+                      );
+                      assigneeId2 = match?.id;
+                    } catch { /* skip */ }
+                  }
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const destItem = await (dstProvider as any).createWorkItem({
+                    type: full.type, rawTypeName: dstTypeName, title: full.title,
+                    description: desc,
+                    storyPoints: fields.has('points') ? (full.storyPoints ?? full.effort) : undefined,
+                    priority: fields.has('priority') ? full.priority : undefined,
+                    labels: fields.has('labels') && full.labels?.length ? full.labels : undefined,
+                    assigneeId: assigneeId2
+                  });
+                  retryCreated.push(`[${src.key}](${full.url}) -> [${destItem.key}](${destItem.url})`);
+                  retryMoved++;
+                } catch (err) {
+                  retryFailedKeys.push(`${src.key}: ${err instanceof Error ? err.message : String(err)}`);
+                  retryFailed++;
+                }
+              }
+            }
+          );
+          const retryLines = [`**Retry complete:** ${retryMoved} created, ${retryFailed} still failed.`];
+          if (retryCreated.length) { retryLines.push('', ...retryCreated.map(k => `- ${k}`)); }
+          if (retryFailedKeys.length) { retryLines.push('', '**Still failed:**', ...retryFailedKeys.map(k => `- ${k}`)); }
+          this._lastMigrateResult = summary + '\n\n---\n\n' + retryLines.join('\n');
+          vscode.window.showInformationMessage(`Retry: ${retryMoved} created, ${retryFailed} still failed.`);
+        }
+      }
+    } else {
+      vscode.window.showInformationMessage(
+        `Migration complete: ${moved} created, ${failed} failed.`
+      );
+    }
   }
 
   /** Last migration result — read by chat panels */
