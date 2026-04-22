@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [2.2.0] - 2026-04-22
+
+### Features
+
+- consecutive filters, provider type mappings, preserve types in migration
+
 ## [2.1.0] - 2026-04-21
 
 ### Features
