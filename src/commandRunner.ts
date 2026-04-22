@@ -966,52 +966,62 @@ export class CommandRunner {
   async parent() {
     const { provider, creds } = await this.getProvider();
 
-    // ── Filters: type, status, sprint ────────────────────────────────────
-    // Get available filter values
+    // ── Filters: consecutive menus for type, status, sprint ────────────
+    const query: import('./types').WorkItemQuery = { maxResults: 200 };
+
+    // 1. Type filter
     let types: string[] = [];
-    let statuses: string[] = [];
-    let sprints: import('./types').Sprint[] = [];
     try { types = await provider.getWorkItemTypes(); } catch { /* skip */ }
+    let typeFilter: string | undefined;
+    if (types.length) {
+      const typeOpts = [
+        { label: 'All types', value: '' },
+        ...types.map(t => ({ label: t, value: t }))
+      ];
+      const typePick = await vscode.window.showQuickPick(typeOpts, {
+        title: 'Step 1/3 — Filter by type',
+        placeHolder: 'Select a type or All types',
+        ignoreFocusOut: true
+      });
+      if (!typePick) { return; }
+      if (typePick.value) { typeFilter = typePick.value; }
+    }
+
+    // 2. Status filter
+    let statuses: string[] = [];
     try {
       if (provider.getWorkItemStates) { statuses = await provider.getWorkItemStates('Task'); }
       else if (provider.getProjectStatuses) { statuses = await provider.getProjectStatuses(); }
-      else if (provider.getAvailableTransitions) { statuses = ['open', 'closed']; }
     } catch { /* skip */ }
-    try { sprints = await provider.getAllSprints(); } catch { /* skip */ }
-
-    type FQ = vscode.QuickPickItem & { field: string; value: string };
-    const filterOpts: FQ[] = [
-      { label: 'All types',    description: 'No type filter',   field: 'type',   value: '', picked: true } as any,
-      ...types.map(t =>   ({ label: `Type: ${t}`,      description: '', field: 'type',   value: t })),
-      { label: '── Status ──', description: '', field: '', value: '', kind: vscode.QuickPickItemKind.Separator } as any,
-      { label: 'All statuses', description: 'No status filter', field: 'status', value: '', picked: true } as any,
-      ...statuses.map(s => ({ label: `Status: ${s}`,   description: '', field: 'status', value: s })),
+    if (!statuses.length) { statuses = ['open', 'closed']; }
+    const statusOpts = [
+      { label: 'Open items', value: 'open' },
+      { label: 'All statuses', value: '' },
+      ...statuses.filter(s => s !== 'open').map(s => ({ label: s, value: s }))
     ];
-    if (sprints.length) {
-      filterOpts.push(
-        { label: '── Sprint ──', description: '', field: '', value: '', kind: vscode.QuickPickItemKind.Separator } as any,
-        { label: 'All sprints',  description: 'No sprint filter', field: 'sprint', value: '' } as any,
-        ...sprints.map(s => ({ label: `Sprint: ${s.name}`, description: s.state, field: 'sprint', value: s.id }))
-      );
-    }
-
-    const filters = await vscode.window.showQuickPick(filterOpts, {
-      title: 'Filter items (optional — select filters then press OK)',
-      canPickMany: true,
+    const statusPick = await vscode.window.showQuickPick(statusOpts, {
+      title: 'Step 2/3 — Filter by status',
+      placeHolder: 'Select a status',
       ignoreFocusOut: true
     });
+    if (!statusPick) { return; }
+    if (statusPick.value) { query.status = statusPick.value; }
 
-    // Build query from filters
-    const query: import('./types').WorkItemQuery = { maxResults: 200 };
-    if (filters?.length) {
-      const typeFilter = filters.find(f => f.field === 'type' && f.value);
-      const statusFilter = filters.find(f => f.field === 'status' && f.value);
-      const sprintFilter = filters.find(f => f.field === 'sprint' && f.value);
-      if (statusFilter) { query.status = statusFilter.value; }
-      else { query.status = 'open'; }
-      if (sprintFilter) { query.sprintId = sprintFilter.value; }
-    } else {
-      query.status = 'open';
+    // 3. Sprint filter
+    let sprints: import('./types').Sprint[] = [];
+    try { sprints = await provider.getAllSprints(); } catch { /* skip */ }
+    if (sprints.length) {
+      const sprintOpts = [
+        { label: 'All sprints', value: '' },
+        ...sprints.map(s => ({ label: `${s.name} (${s.state})`, value: s.id }))
+      ];
+      const sprintPick = await vscode.window.showQuickPick(sprintOpts, {
+        title: 'Step 3/3 — Filter by sprint',
+        placeHolder: 'Select a sprint',
+        ignoreFocusOut: true
+      });
+      if (!sprintPick) { return; }
+      if (sprintPick.value) { query.sprintId = sprintPick.value; }
     }
 
     // Load items
@@ -1020,16 +1030,12 @@ export class CommandRunner {
       () => provider.searchWorkItems(query)
     ).then(v => v, () => [] as import('./types').WorkItem[]);
 
-    // Apply type filter client-side (search API may not support type filtering)
-    if (filters?.length) {
-      const typeFilter = filters.find(f => f.field === 'type' && f.value);
-      if (typeFilter) {
-        const tf = typeFilter.value.toLowerCase();
-        all = all.filter(i =>
-          (i.rawTypeName ?? '').toLowerCase() === tf ||
-          i.type.toLowerCase() === tf
-        );
-      }
+    // Apply type filter client-side
+    if (typeFilter) {
+      const tf = typeFilter.toLowerCase();
+      all = all.filter(i =>
+        (i.rawTypeName ?? '').toLowerCase() === tf || i.type.toLowerCase() === tf
+      );
     }
 
     if (!all.length) {
@@ -1294,42 +1300,47 @@ export class CommandRunner {
       return wi.rawTypeName ?? cap(wi.type);
     }))];
 
-    // Load stored type mappings as defaults
+    // Build type mapping: provider defaults → stored overrides → user prompt
+    // 1. Provider-suggested defaults (each provider knows its canonical mappings)
+    const providerDefaults = srcProvider.getDefaultTypeMappings?.(dstTypes) ?? {};
+
+    // 2. Stored overrides from Configure Platform
     const storedMappings = this.credMgr.getTypeMappings();
     const storedForDirection = storedMappings[direction] ?? {};
 
     const typeMap: Record<string, string> = {};
     for (const srcType of srcTypeNames) {
-      // Check stored mapping first, then auto-match by name
+      // Priority: stored override > provider default > exact name match > prompt
       const stored = storedForDirection[srcType];
-      const exact = stored
-        ? dstTypes.find(d => d === stored)
-        : dstTypes.find(d => d.toLowerCase() === srcType.toLowerCase());
+      const providerDefault = providerDefaults[srcType];
+      const exactMatch = dstTypes.find(d => d.toLowerCase() === srcType.toLowerCase());
+      const bestDefault = stored ?? providerDefault ?? exactMatch;
 
       // Build options with the best match pre-selected at top
       type TQ = vscode.QuickPickItem & { rawType: string };
       const typeOpts: TQ[] = dstTypes.map(t => ({
         label: t,
-        description: t === stored ? '(saved default)' : t.toLowerCase() === srcType.toLowerCase() ? '(auto-matched)' : '',
+        description:
+          t === stored ? '(saved override)' :
+          t === providerDefault ? '(provider default)' :
+          t.toLowerCase() === srcType.toLowerCase() ? '(exact match)' : '',
         rawType: t,
       }));
 
-      // Sort so the match appears first
-      if (exact) {
+      // Sort so the best match appears first
+      if (bestDefault) {
         typeOpts.sort((a, b) => {
-          if (a.rawType === exact) { return -1; }
-          if (b.rawType === exact) { return 1; }
+          if (a.rawType === bestDefault) { return -1; }
+          if (b.rawType === bestDefault) { return 1; }
           return 0;
         });
       }
 
       const picked = await vscode.window.showQuickPick<TQ>(typeOpts, {
         title: `Map "${srcType}" → ${dstName} type`,
-        placeHolder: stored
-          ? `Saved default: "${stored}" — press Enter to accept or pick a different type`
-          : exact
-            ? `"${srcType}" matched "${exact}" — press Enter to accept or pick a different type`
-            : `"${srcType}" has no match in ${dstName} — choose a type`,
+        placeHolder: bestDefault
+          ? `"${srcType}" → "${bestDefault}" — press Enter to accept or pick a different type`
+          : `"${srcType}" has no match in ${dstName} — choose a type`,
         ignoreFocusOut: true
       });
       if (!picked) { return; }
@@ -1680,29 +1691,21 @@ export class CommandRunner {
         const childDesc = stripHtml(childFull.description ?? '');
         const childAc   = stripHtml((childFull as any).acceptanceCriteria ?? '');
 
-        // Map child type — for Jira destinations, adjust based on depth
+        // Map child type — USE the user's typeMap, preserve types (Epic→Epic, Story→Story)
         const childSrcType = childFull.rawTypeName ?? cap(childFull.type);
         let childDstType = opts.typeMap[childSrcType];
         if (!childDstType) {
           const match = opts.dstTypes.find((d: string) => d.toLowerCase() === childSrcType.toLowerCase());
-          childDstType = match ?? 'Task';
+          childDstType = match ?? opts.typeMap['Task'] ?? 'Task';
         }
-        // Jira hierarchy rules:
-        //   depth 0 (child of Story/Epic): use Sub-task with parentId
-        //   depth 1+ (child of Sub-task): use Task WITHOUT parentId (Sub-task can't have Sub-task children)
-        //     → link via issueLink instead
-        const isJiraDst = opts.direction.endsWith('-to-jira') || opts.direction === 'ado-to-jira' || opts.direction === 'github-to-jira';
+        // Jira only: if parent link fails with hierarchy error, the provider's
+        // createWorkItem retry logic will handle it (tries Sub-task then no-parent fallback).
+        // We do NOT force Sub-task here — the typeMap should be respected.
+        const isJiraDst = opts.direction.endsWith('-to-jira');
         let useParentField = true;
-        if (isJiraDst) {
-          if (opts.depth === 0) {
-            const subTaskType = opts.dstTypes.find((d: string) => d.toLowerCase() === 'sub-task' || d.toLowerCase() === 'subtask');
-            if (subTaskType) { childDstType = subTaskType; }
-          } else {
-            // Deeper levels: use Task, don't set parentId (would fail with hierarchy error)
-            const taskType = opts.dstTypes.find((d: string) => d.toLowerCase() === 'task') ?? 'Task';
-            childDstType = taskType;
-            useParentField = false;
-          }
+        // For Jira deep nesting (depth 1+), don't pass parentId — link after creation instead
+        if (isJiraDst && opts.depth > 0) {
+          useParentField = false;
         }
 
         let childDescFinal = opts.fields.has('description') ? childDesc : undefined;

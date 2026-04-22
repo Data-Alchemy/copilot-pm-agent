@@ -56,4 +56,11 @@ export interface IProvider {
   getPriorities?(): Promise<string[]>;
   getLabels?(): Promise<string[]>;
   getStoryPointsField?(): Promise<string | null>;
+
+  /**
+   * Return default type mappings FROM this provider's types TO the target platform's types.
+   * Each provider knows its own canonical types and can suggest the best match.
+   * Users can override these in Configure Platform.
+   */
+  getDefaultTypeMappings?(targetTypes: string[]): Record<string, string>;
 }

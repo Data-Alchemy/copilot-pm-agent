@@ -595,4 +595,32 @@ export class AdoProvider {
       createdAt:   f['System.CreatedDate'], updatedAt: f['System.ChangedDate']
     };
   }
+
+  /** Best-effort mapping from ADO types to a target platform's types */
+  getDefaultTypeMappings(targetTypes: string[]): Record<string, string> {
+    const find = (names: string[]) => {
+      for (const n of names) {
+        const match = targetTypes.find(t => t.toLowerCase() === n.toLowerCase());
+        if (match) { return match; }
+      }
+      return undefined;
+    };
+    const map: Record<string, string> = {};
+    const adoCanonical: Record<string, string[]> = {
+      'Epic':              ['Epic'],
+      'Feature':           ['Feature', 'Story', 'Enhancement'],
+      'User Story':        ['Story', 'User Story', 'Feature'],
+      'Product Backlog Item': ['Story', 'User Story', 'Feature'],
+      'Requirement':       ['Story', 'Requirement', 'Feature'],
+      'Task':              ['Task'],
+      'Bug':               ['Bug'],
+      'Test Case':         ['Test Case', 'Test', 'Task'],
+      'Issue':             ['Task', 'Bug'],
+    };
+    for (const [adoType, candidates] of Object.entries(adoCanonical)) {
+      const match = find(candidates);
+      if (match) { map[adoType] = match; }
+    }
+    return map;
+  }
 }

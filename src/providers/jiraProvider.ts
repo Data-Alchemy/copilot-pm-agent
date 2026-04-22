@@ -978,9 +978,33 @@ export class JiraProvider {
       comments
     };
   }
-}
 
-// ── ADF utilities ─────────────────────────────────────────────────────────────
+  /** Best-effort mapping from Jira types to a target platform's types */
+  getDefaultTypeMappings(targetTypes: string[]): Record<string, string> {
+    const find = (names: string[]) => {
+      for (const n of names) {
+        const match = targetTypes.find(t => t.toLowerCase() === n.toLowerCase());
+        if (match) { return match; }
+      }
+      return undefined;
+    };
+    const map: Record<string, string> = {};
+    const jiraCanonical: Record<string, string[]> = {
+      'Epic':      ['Epic'],
+      'Story':     ['User Story', 'Story', 'Feature'],
+      'Task':      ['Task'],
+      'Sub-task':  ['Task', 'Sub-task'],
+      'Bug':       ['Bug'],
+      'Feature':   ['Feature', 'User Story', 'Story'],
+      'Test':      ['Test Case', 'Test', 'Task'],
+    };
+    for (const [jiraType, candidates] of Object.entries(jiraCanonical)) {
+      const match = find(candidates);
+      if (match) { map[jiraType] = match; }
+    }
+    return map;
+  }
+}
 
 /** Convert plain text to Atlassian Document Format (ADF) */
 function toAdf(text: string): object {

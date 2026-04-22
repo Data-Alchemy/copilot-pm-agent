@@ -938,4 +938,30 @@ export class GitHubProvider {
     if (t === 'task') { return 'Task'; }
     return null;
   }
+
+  /** Best-effort mapping from GitHub types to a target platform's types */
+  getDefaultTypeMappings(targetTypes: string[]): Record<string, string> {
+    const find = (names: string[]) => {
+      for (const n of names) {
+        const match = targetTypes.find(t => t.toLowerCase() === n.toLowerCase());
+        if (match) { return match; }
+      }
+      return undefined;
+    };
+    const map: Record<string, string> = {};
+    const ghCanonical: Record<string, string[]> = {
+      'Epic':        ['Epic'],
+      'Feature':     ['Feature', 'User Story', 'Story'],
+      'Task':        ['Task'],
+      'Bug':         ['Bug'],
+      'Story':       ['Story', 'User Story', 'Feature'],
+      'enhancement': ['Feature', 'Story', 'User Story'],
+      'bug':         ['Bug'],
+    };
+    for (const [ghType, candidates] of Object.entries(ghCanonical)) {
+      const match = find(candidates);
+      if (match) { map[ghType] = match; }
+    }
+    return map;
+  }
 }

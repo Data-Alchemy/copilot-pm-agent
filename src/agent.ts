@@ -1777,64 +1777,63 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  provider: ReturnType<typeof createProvider>,
  platform: string = 'azuredevops'
  ): Promise<PmResultMeta> {
- // ── Filters: type, status, sprint ──────────────────────────────────
+ // ── Consecutive filter menus: Type → Status → Sprint ────────────────
+ const query: import('./types').WorkItemQuery = { maxResults: 200 };
+
+ // 1. Type filter
  let types: string[] = [];
- let statuses: string[] = [];
- let sprints: import("./types").Sprint[] = [];
  try { types = await provider.getWorkItemTypes(); } catch { /* skip */ }
+ let typeFilter: string | undefined;
+ if (types.length) {
+ const typeOpts = [{ label: 'All types', value: '' }, ...types.map((t: string) => ({ label: t, value: t }))];
+ const typePick = await vscode.window.showQuickPick(typeOpts, {
+ title: 'Step 1/3 — Filter by type', placeHolder: 'Select a type or All types', ignoreFocusOut: true
+ });
+ if (!typePick) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
+ if (typePick.value) { typeFilter = typePick.value; }
+ }
+
+ // 2. Status filter
+ let statuses: string[] = [];
  try {
  if (provider.getWorkItemStates) { statuses = await provider.getWorkItemStates('Task'); }
  else if (provider.getProjectStatuses) { statuses = await provider.getProjectStatuses(); }
  } catch { /* skip */ }
- try { sprints = await provider.getAllSprints(); } catch { /* skip */ }
-
- type FQ = vscode.QuickPickItem & { field: string; value: string };
- const filterOpts: FQ[] = [
- { label: 'All types', description: 'No type filter', field: 'type', value: '' } as any,
- ...types.map((t: string) => ({ label: `Type: ${t}`, description: '', field: 'type', value: t })),
- { label: '── Status ──', description: '', field: '', value: '', kind: vscode.QuickPickItemKind.Separator } as any,
- { label: 'All statuses', description: 'No status filter', field: 'status', value: '' } as any,
- ...statuses.map((s: string) => ({ label: `Status: ${s}`, description: '', field: 'status', value: s })),
+ if (!statuses.length) { statuses = ['open', 'closed']; }
+ const statusOpts = [
+ { label: 'Open items', value: 'open' },
+ { label: 'All statuses', value: '' },
+ ...statuses.filter((s: string) => s.toLowerCase() !== 'open').map((s: string) => ({ label: s, value: s }))
  ];
- if (sprints.length) {
- filterOpts.push(
- { label: '── Sprint ──', description: '', field: '', value: '', kind: vscode.QuickPickItemKind.Separator } as any,
- { label: 'All sprints', description: 'No sprint filter', field: 'sprint', value: '' } as any,
- ...sprints.map((s: import("./types").Sprint) => ({ label: `Sprint: ${s.name}`, description: s.state, field: 'sprint', value: s.id }))
- );
- }
-
- const filters = await vscode.window.showQuickPick(filterOpts, {
- title: 'Filter items (optional)',
- canPickMany: true,
- ignoreFocusOut: true
+ const statusPick = await vscode.window.showQuickPick(statusOpts, {
+ title: 'Step 2/3 — Filter by status', placeHolder: 'Select a status', ignoreFocusOut: true
  });
+ if (!statusPick) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
+ if (statusPick.value) { query.status = statusPick.value; }
 
- const query: import("./types").WorkItemQuery = { maxResults: 200 };
- let typeFilter: string | undefined;
- if (filters?.length) {
- const tf = filters.find((f: any) => f.field === 'type' && f.value);
- const sf = filters.find((f: any) => f.field === 'status' && f.value);
- const sp = filters.find((f: any) => f.field === 'sprint' && f.value);
- if (sf) { query.status = sf.value; } else { query.status = 'open'; }
- if (sp) { query.sprintId = sp.value; }
- if (tf) { typeFilter = tf.value; }
- } else {
- query.status = 'open';
+ // 3. Sprint filter
+ let sprints: import('./types').Sprint[] = [];
+ try { sprints = await provider.getAllSprints(); } catch { /* skip */ }
+ if (sprints.length) {
+ const sprintOpts = [
+ { label: 'All sprints', value: '' },
+ ...sprints.map((s: import('./types').Sprint) => ({ label: `${s.name} (${s.state})`, value: s.id }))
+ ];
+ const sprintPick = await vscode.window.showQuickPick(sprintOpts, {
+ title: 'Step 3/3 — Filter by sprint', placeHolder: 'Select a sprint', ignoreFocusOut: true
+ });
+ if (!sprintPick) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
+ if (sprintPick.value) { query.sprintId = sprintPick.value; }
  }
 
  // ── Load items ──────────────────────────────────────────────────────
  stream.progress('Loading items...');
  let all: WorkItem[] = [];
- try {
- all = await provider.searchWorkItems(query);
- } catch { /* empty */ }
-
+ try { all = await provider.searchWorkItems(query); } catch { /* empty */ }
  if (typeFilter) {
  const tf = typeFilter.toLowerCase();
  all = all.filter(i => (i.rawTypeName ?? '').toLowerCase() === tf || i.type.toLowerCase() === tf);
  }
-
  if (!all.length) {
  stream.markdown('_No items found matching the filters._');
  return { action: 'error' };
@@ -1847,16 +1846,13 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  description: `${wi.rawTypeName ?? cap(wi.type)} · ${wi.status}${wi.sprint ? ' · ' + wi.sprint : ''}`,
  wi
  }));
-
  const selectedChildren = await vscode.window.showQuickPick(childOpts, {
  title: `Select items to assign a parent to (${all.length} loaded)`,
- canPickMany: true,
- matchOnDescription: true,
- ignoreFocusOut: true
+ canPickMany: true, matchOnDescription: true, ignoreFocusOut: true
  });
  if (!selectedChildren?.length) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
 
- // ── Pick parent (exclude selected children) ────────────────────────
+ // ── Pick parent ────────────────────────────────────────────────────
  const childKeys = new Set(selectedChildren.map(c => c.wi.key));
  let parentCandidates = [...all];
  if (all.length < 50) {
@@ -1867,11 +1863,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  } catch { /* use what we have */ }
  }
  const parents = parentCandidates.filter(i => !childKeys.has(i.key));
-
- if (!parents.length) {
- stream.markdown('_No eligible parent items found._');
- return { action: 'error' };
- }
+ if (!parents.length) { stream.markdown('_No eligible parent items found._'); return { action: 'error' }; }
 
  type ParentOpt = vscode.QuickPickItem & { wi: WorkItem };
  const parentOpts: ParentOpt[] = parents.map(p => ({
@@ -1879,15 +1871,13 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  description: `${p.rawTypeName ?? cap(p.type)} · ${p.status}`,
  wi: p
  }));
-
  const picked = await vscode.window.showQuickPick(parentOpts, {
  title: `Select parent for ${selectedChildren.length} item${selectedChildren.length !== 1 ? 's' : ''}`,
- matchOnDescription: true,
- ignoreFocusOut: true
+ matchOnDescription: true, ignoreFocusOut: true
  });
  if (!picked) { stream.markdown('_Cancelled._'); return { action: 'error' }; }
 
- // ── Link all children to the parent ────────────────────────────────
+ // ── Link ────────────────────────────────────────────────────────────
  stream.progress(`Linking ${selectedChildren.length} items to ${picked.wi.key}...`);
  let linked = 0, failed = 0;
  for (const child of selectedChildren) {
@@ -1896,16 +1886,15 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  const parentId = platform === 'azuredevops' ? picked.wi.id : (picked.wi.key || picked.wi.id);
  await provider.addParentLink(childId, parentId);
  linked++;
- } catch {
- failed++;
+ } catch { failed++; }
  }
- }
-
  const msg = `Linked ${linked} item${linked !== 1 ? 's' : ''} to **[${picked.wi.key}](${picked.wi.url})** — ${picked.wi.title}` +
  (failed ? ` (${failed} failed)` : '');
  stream.markdown(formatSuccess(msg));
  return { action: 'opened', itemKey: picked.wi.key };
  }
+
+
 
  // ── MOVE (change sprint / iteration) ─────────────────────────────────────
 
@@ -2413,19 +2402,14 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
        let cDstType = typeMap[cSrcType];
        if (!cDstType) {
          const match = dstTypes.find((d: string) => d.toLowerCase() === cSrcType.toLowerCase());
-         cDstType = match ?? 'Task';
+         cDstType = match ?? typeMap['Task'] ?? 'Task';
        }
-       // Jira hierarchy: depth 0 = Sub-task under Story/Epic; depth 1+ = Task (can't nest Sub-tasks)
+       // Preserve the user's typeMap — don't force Sub-task.
+       // Jira's createWorkItem has retry logic for hierarchy errors.
        const isJiraDst = destName.toLowerCase().includes('jira');
        let useParentField = true;
-       if (isJiraDst) {
-         if (depth === 0) {
-           const subTask = dstTypes.find((d: string) => d.toLowerCase() === 'sub-task' || d.toLowerCase() === 'subtask');
-           if (subTask) { cDstType = subTask; }
-         } else {
-           cDstType = dstTypes.find((d: string) => d.toLowerCase() === 'task') ?? 'Task';
-           useParentField = false;
-         }
+       if (isJiraDst && depth > 0) {
+         useParentField = false;
        }
        let cDescF = fields.has('description') ? cDesc : undefined;
        if (!cDescF && direction === 'jira-to-ado') { cDescF = cf.title; }
