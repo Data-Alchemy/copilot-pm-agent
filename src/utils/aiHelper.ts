@@ -249,7 +249,30 @@ async function callAi(config: AiConfig, system: string, user: string, requestMod
     try { return JSON.parse(repaired); } catch { /* fall through */ }
   }
 
-  throw new Error(`Invalid JSON from AI: ${clean.slice(0, 100)}...`);
+  // Last resort: extract individual JSON objects from the text
+  const objectMatches = [...clean.matchAll(/\{[^{}]*"title"\s*:\s*"[^"]*"[^{}]*\}/g)];
+  if (objectMatches.length) {
+    const items = [];
+    for (const m of objectMatches) {
+      try { items.push(JSON.parse(m[0])); } catch { /* skip malformed */ }
+    }
+    if (items.length) { return items; }
+  }
+
+  // Very last resort: if it looks like the AI returned prose, try to parse numbered/bulleted items
+  const lines = clean.split('\n').filter(l => l.trim());
+  const taskLines = lines.filter(l => /^\d+[.)]\s+|^[-*]\s+/.test(l.trim()));
+  if (taskLines.length >= 2) {
+    return taskLines.map(l => ({
+      title: l.replace(/^\d+[.)]\s+|^[-*]\s+/, '').replace(/\*\*/g, '').trim(),
+      description: '',
+      effortPoints: 2,
+      area: 'Development',
+      suggestedType: 'Task'
+    }));
+  }
+
+  throw new Error(`Invalid JSON from AI (${clean.length} chars). First 200: ${clean.slice(0, 200)}`);
 }
 
 // ── Public AI functions ───────────────────────────────────────────────────────
@@ -282,7 +305,23 @@ export async function enhanceTicket(
     `}`;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await callAi(config, system, user, requestModel) as any;
+  let result: any;
+  try {
+    result = await callAi(config, system, user, requestModel);
+  } catch {
+    // AI returned non-JSON — build a basic enhancement from title/notes
+    return {
+      title,
+      what: rawNotes || title,
+      why: 'See description for details.',
+      how: rawNotes ? rawNotes.split('\n').filter((l: string) => l.trim()).map((l: string) => `- ${l.trim()}`).join('\n') : `- Implement ${title}`,
+      effortPoints: 3,
+      effortReasoning: 'Default estimate — AI response could not be parsed',
+      priority: 'Medium',
+      priorityReasoning: 'Default priority',
+      clarifyingQuestion: null
+    } as AiTicketEnhancement;
+  }
   // Normalise 'how' — AI sometimes returns an array instead of a string
   if (result && typeof result === 'object') {
     if (Array.isArray(result.how)) {
@@ -523,7 +562,19 @@ export async function generateTasksForStory(
     `[{ "title": "...", "description": "1-2 sentences of exactly what to implement", "effortPoints": <1|2|3|5>, "area": "Backend|Frontend|Database|DevOps|Design|Documentation", "suggestedType": "<best matching type from the available list, default to Task>" }]`;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await callAi(config, system, user, requestModel) as any;
+  let result: any;
+  try {
+    result = await callAi(config, system, user, requestModel);
+  } catch {
+    // AI returned non-JSON — return a single generic task so creation still works
+    return [{
+      title: `Implement: ${storyTitle}`,
+      description: storyWhat || storyTitle,
+      effortPoints: 3,
+      area: 'Development',
+      suggestedType: 'Task'
+    }];
+  }
   // Handle both array response and {tasks: [...]} shape
   const tasks: GeneratedTask[] = Array.isArray(result) ? result : (result.tasks ?? []);
   // Normalise each task — AI may return objects/arrays for description
