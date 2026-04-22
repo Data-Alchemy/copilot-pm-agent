@@ -6,6 +6,12 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [2.2.1] - 2026-04-22
+
+### Bug Fixes
+
+- AI parsing 7-level fallback, never fails on bad JSON
+
 ## [2.2.0] - 2026-04-22
 
 ### Features
