@@ -92,7 +92,7 @@ export class CommandRunner {
     try {
       items = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'Loading work items…' },
-        () => provider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 100 })
+        () => provider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 500 })
       ) as WorkItem[];
     } catch (e) {
       vscode.window.showErrorMessage(`Failed to load items: ${e instanceof Error ? e.message : String(e)}`);
@@ -145,7 +145,7 @@ export class CommandRunner {
 
     const items = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Loading ${label}'s items...` },
-      () => provider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 50 })
+      () => provider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 500 })
     );
 
     if (!items.length) {
@@ -357,7 +357,7 @@ export class CommandRunner {
     const du = await this.defaultUser();
     const allItems = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: 'Loading items...' },
-      () => provider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 100 })
+      () => provider.searchWorkItems({ assigneeId: du?.id ?? '@me', maxResults: 500 })
 ).then(v => v, () => [] as WorkItem[]);
 
     if (!allItems.length) {
@@ -494,7 +494,7 @@ export class CommandRunner {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ? (active as any).iterationPath ?? active.id
         : active.id,
-      maxResults: 50
+      maxResults: 500
     }).catch(() => [] as WorkItem[]);
 
     const lines = [
@@ -967,7 +967,7 @@ export class CommandRunner {
     const { provider, creds } = await this.getProvider();
 
     // ── Filters: consecutive menus for type, status, sprint ────────────
-    const query: import('./types').WorkItemQuery = { maxResults: 200 };
+    const query: import('./types').WorkItemQuery = { maxResults: 500 };
 
     // 1. Type filter
     let types: string[] = [];
@@ -1066,7 +1066,7 @@ export class CommandRunner {
     if (all.length < 50) {
       // Reload without filters to get more parent candidates
       try {
-        const moreItems = await provider.searchWorkItems({ status: 'open', maxResults: 200 });
+        const moreItems = await provider.searchWorkItems({ status: 'open', maxResults: 500 });
         const existing = new Set(all.map(i => i.key));
         for (const item of moreItems) {
           if (!existing.has(item.key)) { parentCandidates.push(item); }
@@ -1210,7 +1210,7 @@ export class CommandRunner {
             }
           } else {
             const batch = await srcProvider.searchWorkItems({
-              assigneeId: du?.id ?? '@me', maxResults: 200
+              assigneeId: du?.id ?? '@me', maxResults: 500
             });
             items.push(...batch);
           }

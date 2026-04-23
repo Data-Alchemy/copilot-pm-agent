@@ -120,7 +120,7 @@ export class AdoProvider {
     if (query.text)                   { conds.push(`[System.Title] Contains '${safe(query.text)}'`); }
 
     const wiql = `SELECT [System.Id] FROM WorkItems WHERE ${conds.join(' AND ')} ORDER BY [System.ChangedDate] DESC`;
-    const top = Math.min(query.maxResults ?? 25, 1000);
+    const top = Math.min(query.maxResults ?? 200, 1000);
     const url  = `${this.orgUrl}/${this.projectEnc}/_apis/wit/wiql?$top=${top}&api-version=7.1`;
     this.lastWiql = wiql; this.lastUrl = url;
 

@@ -95,7 +95,7 @@ export class JiraProvider {
     const jql    = (parts.length ? parts.join(' AND ') : `project = "${project}"`) + ' ORDER BY updated DESC';
     const fields = 'summary,status,issuetype,assignee,reporter,priority,labels,customfield_10016,customfield_10028,customfield_10014,story_points,customfield_10020,sprint,created,updated,description,project,comment';
 
-    const max = query.maxResults ?? 25;
+    const max = query.maxResults ?? 100;
     const allItems: WorkItem[] = [];
     let startAt = 0;
     const pageSize = Math.min(max, 100);

@@ -535,7 +535,7 @@ export async function generateTasksForStory(
     bug:     'Focus on: root cause investigation, the specific code fix, regression test for the fix. Do NOT add generic QA tasks.',
     story:   'Focus on the actual implementation work: backend logic, API changes, frontend UI, data model changes. Add a testing task only if explicit testing acceptance criteria exist.',
     feature: 'Focus on design, implementation across relevant layers (API, UI, DB), and integration. Only add a testing task if it is a significant new surface area.',
-    epic:    'Break into major implementation workstreams. Each task should represent a meaningful deliverable.',
+    epic:    'Break into 3-5 features. Each feature should be a distinct, deliverable capability or component. Focus on WHAT the system needs to do — not implementation tasks. Each feature will have its own implementation tasks generated separately. Use clear, specific feature names like "User Authentication System" or "Data Export Dashboard".',
     task:    'Break into specific sub-steps. Be concrete about what code/config needs changing.'
   };
 

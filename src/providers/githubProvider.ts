@@ -114,19 +114,31 @@ export class GitHubProvider {
       if (label) { parts.push(`label:${label}`); }
     }
 
-    const max = Math.min(query.maxResults ?? 30, 100);
+    const max = query.maxResults ?? 100;
     const q = parts.join(' ');
-    const data = await this.rest<{ items?: any[] }>(
-      `/search/issues?q=${encodeURIComponent(q)}&per_page=${max}&sort=updated&order=desc`
-    );
+    const allItems: WorkItem[] = [];
+    let page = 1;
 
-    return (data.items ?? []).map((i: any) => this.mapIssue(i));
+    // GitHub search API caps at 100 per page — paginate to get more
+    while (allItems.length < max) {
+      const perPage = Math.min(100, max - allItems.length);
+      const data = await this.rest<{ items?: any[]; total_count?: number }>(
+        `/search/issues?q=${encodeURIComponent(q)}&per_page=${perPage}&page=${page}&sort=updated&order=desc`
+      );
+      const items = (data.items ?? []).map((i: any) => this.mapIssue(i));
+      allItems.push(...items);
+      if (items.length < perPage || allItems.length >= (data.total_count ?? max)) { break; }
+      page++;
+      if (page > 10) { break; } // safety cap
+    }
+
+    return allItems;
   }
 
   /** Load items directly from GitHub Projects v2 board with their project-specific status */
   private async _searchFromProject(query: WorkItemQuery): Promise<WorkItem[]> {
     const projectId = await this.getProjectId();
-    const max = query.maxResults ?? 100;
+    const max = query.maxResults ?? 500;
     let cursor: string | null = null;
     const allItems: WorkItem[] = [];
 
@@ -370,12 +382,10 @@ export class GitHubProvider {
       } catch { /* project add is best-effort */ }
     }
 
-    // Parent linking via task list (add reference in parent body)
+    // Parent linking — use sub-issues API for real hierarchy
     if (input.parentId) {
-      try {
-        const parentNum = String(input.parentId).replace(/^#/, '');
-        await this.addComment(parentNum, `Child issue: #${issue.number} — ${input.title}`);
-      } catch { /* best effort */ }
+      const parentNum = String(input.parentId).replace(/^#/, '');
+      await this.addParentLink(String(issue.number), parentNum);
     }
 
     return item;
@@ -433,29 +443,67 @@ export class GitHubProvider {
   async addParentLink(childNumber: string, parentNumber: string): Promise<void> {
     const child = String(childNumber).replace(/^#/, '');
     const parent = String(parentNumber).replace(/^#/, '');
-    try {
-      // Sub-issues API needs the child's numeric `id` (NOT issue number)
-      // Fetch the child issue to get its id
-      const childIssue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${child}`);
-      const childId = childIssue.id; // numeric database ID
 
-      await this.rest(`/repos/${this.owner}/${this.repo}/issues/${parent}/sub_issues`, {
+    // Step 1: Fetch the child issue to get its numeric database id
+    const childIssue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${child}`);
+    const childId = childIssue.id; // numeric database ID e.g. 3000028010
+
+    // Step 2: Try REST sub-issues API with 2026-03-10
+    const url = `https://api.github.com/repos/${this.owner}/${this.repo}/issues/${parent}/sub_issues`;
+    try {
+      const res = await globalThis.fetch(url, {
         method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2026-03-10',
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({ sub_issue_id: childId }),
       });
-    } catch {
-      // Fallback: add a comment referencing the parent
-      await this.addComment(child, `Parent: #${parent}`);
+      if (res.ok) { return; }
+      const errBody = await res.text().catch(() => '');
+      console.log(`Sub-issue REST API failed (${res.status}): ${errBody.slice(0, 300)}`);
+    } catch (e) {
+      console.log(`Sub-issue REST API error: ${e instanceof Error ? e.message : String(e)}`);
     }
+
+    // Step 3: Try GraphQL addSubIssue mutation
+    try {
+      const parentIssue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${parent}`);
+      await this.graphql(`
+        mutation($parentId: ID!, $childId: ID!) {
+          addSubIssue(input: { issueId: $parentId, subIssueId: $childId }) {
+            issue { id }
+          }
+        }
+      `, { parentId: parentIssue.node_id, childId: childIssue.node_id });
+      return;
+    } catch (e) {
+      console.log(`Sub-issue GraphQL failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Step 4: Comment fallback
+    await this.addComment(child, `Parent: #${parent}`);
   }
 
   async getChildItems(parentNumber: string): Promise<WorkItem[]> {
     const num = String(parentNumber).replace(/^#/, '');
-    // Try sub-issues API first
+    // Try sub-issues API with correct API version
     try {
-      const data = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${num}/sub_issues?per_page=50`);
-      if (Array.isArray(data) && data.length) {
-        return data.map((i: any) => this.mapIssue(i));
+      const url = `https://api.github.com/repos/${this.owner}/${this.repo}/issues/${num}/sub_issues?per_page=50`;
+      const res = await globalThis.fetch(url, {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2026-03-10',
+        },
+      });
+      if (res.ok) {
+        const data = await res.json() as any[];
+        if (data?.length) {
+          return data.map((i: any) => this.mapIssue(i));
+        }
       }
     } catch { /* fallback */ }
 

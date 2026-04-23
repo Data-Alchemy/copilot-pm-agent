@@ -135,7 +135,7 @@ export class PmAgent {
  }
  }
  if (!q.status && !q.assigneeId) { q.status = 'open'; }
- q.maxResults = q.maxResults ?? 25;
+ q.maxResults = q.maxResults ?? 200;
 
  const userLabel = this.mem.defaultUser?.displayName ?? 'project';
  stream.progress(`Loading ${userLabel}'s work items...`);
@@ -294,7 +294,7 @@ export class PmAgent {
  (sprint.endDate ? `- **End:** ${sprint.endDate.slice(0, 10)}${days !== null ? ` _(${days} day${days !== 1 ? 's' : ''} left)_` : ''}\n` : '')
  );
  stream.progress('Loading sprint items...');
- const sprintItems = await provider.searchWorkItems({ sprintId: sprint.id, maxResults: 50 });
+ const sprintItems = await provider.searchWorkItems({ sprintId: sprint.id, maxResults: 500 });
  stream.markdown(formatWorkItemList(sprintItems));
  const ua = sprintItems.filter((i: any) => !i.assignee).length;
  const ue = sprintItems.filter((i: any) => !i.storyPoints && !i.effort).length;
@@ -679,7 +679,7 @@ export class PmAgent {
  parents = await provider.searchWorkItems({
  query: undefined,
  status: 'open',
- maxResults: 30
+ maxResults: 500
  } as any);
  // Filter to parent-capable types only
  parents = parents.filter(i =>
@@ -1269,6 +1269,71 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  stream.progress(`Creating ${tasksToCreate.length} tasks...`);
  const createdTasks: WorkItem[] = [];
 
+ // Determine hierarchy: Epic creates Stories with Tasks underneath
+ const parentType = (rawTypeName ?? p.type ?? '').toLowerCase();
+ const isEpic = parentType.includes('epic');
+
+ if (isEpic) {
+ // ── EPIC HIERARCHY: Epic → Features → Tasks ─────────────────────
+ // Each AI-generated item becomes a Feature under the Epic
+ // Then we generate Tasks under each Feature
+ const featureType = allWorkItemTypes.find((t: string) => t.toLowerCase() === 'feature')
+   ?? allWorkItemTypes.find((t: string) => t.toLowerCase().includes('feature') || t.toLowerCase() === 'story')
+   ?? allWorkItemTypes.find((t: string) => t.toLowerCase() === 'user story')
+   ?? 'Feature';
+
+ stream.progress(`Creating ${tasksToCreate.length} features under Epic...`);
+ for (let i = 0; i < tasksToCreate.length; i++) {
+ const task = tasksToCreate[i];
+ try {
+ const featureDesc = platform === 'azuredevops' ? `<p>${task.description}</p>` : task.description;
+ // parentId must be the issue NUMBER (not database id) for GitHub
+ const parentRef = created.key?.replace(/^#/, '') ?? created.id;
+ const feature = await (provider as any).createWorkItem({
+ type: 'feature' as WorkItemType,
+ title: task.title,
+ description: featureDesc,
+ storyPoints: task.effortPoints,
+ assigneeId: p.assigneeId,
+ sprintId: platform === 'azuredevops' ? p.iterationPath : p.sprintId,
+ rawTypeName: featureType,
+ parentId: parentRef
+ });
+ createdTasks.push(feature);
+
+ // Generate tasks under each feature
+ stream.progress(`Generating tasks for "${task.title}"...`);
+ let featureTasks: Awaited<ReturnType<typeof generateTasksForStory>> = [];
+ try {
+ featureTasks = await generateTasksForStory(
+ aiConfig, task.title, task.description, '', platform,
+ allWorkItemTypes, 'feature', requestModel
+ );
+ } catch { /* AI might fail — skip sub-tasks for this feature */ }
+
+ const featureRef = feature.key?.replace(/^#/, '') ?? feature.id;
+ for (const st of featureTasks) {
+ try {
+ const stDesc = platform === 'azuredevops' ? `<p>${st.description}</p>` : st.description;
+ const childTask = await (provider as any).createWorkItem({
+ type: 'task' as WorkItemType,
+ title: st.title,
+ description: stDesc,
+ storyPoints: st.effortPoints,
+ assigneeId: p.assigneeId,
+ sprintId: platform === 'azuredevops' ? p.iterationPath : p.sprintId,
+ rawTypeName: defaultTaskType,
+ parentId: featureRef
+ });
+ createdTasks.push(childTask);
+ } catch { /* individual task failure is ok */ }
+ }
+ } catch (e: unknown) {
+ stream.markdown(`Warning: _Failed to create feature "${task.title}": ${e instanceof Error ? e.message : String(e)}_`);
+ }
+ }
+ } else {
+ // ── STORY/TASK HIERARCHY: Story → Tasks ─────────────────────────
  for (let i = 0; i < tasksToCreate.length; i++) {
  const task = tasksToCreate[i];
  const chosenType = taskTypes[i] ?? defaultTaskType;
@@ -1276,7 +1341,8 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  const taskDescHtml = platform === 'azuredevops'
  ? `<p>${task.description}</p>`
  : task.description;
- // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ // parentId: use issue number for GitHub, database id for ADO
+ const parentRef = created.key?.replace(/^#/, '') ?? created.id;
  const ct = await (provider as any).createWorkItem({
  type: 'task' as WorkItemType,
  title: task.title,
@@ -1285,11 +1351,12 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  assigneeId: p.assigneeId,
  sprintId: platform === 'azuredevops' ? p.iterationPath : p.sprintId,
  rawTypeName: chosenType,
- parentId: created.id
+ parentId: parentRef
  });
  createdTasks.push(ct);
  } catch (e: unknown) {
  stream.markdown(`Warning: _Failed to create "${task.title}": ${e instanceof Error ? e.message : String(e)}_`);
+ }
  }
  }
 
@@ -1323,7 +1390,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  try {
  // Use default user if set, otherwise try @me
  const assigneeId = this.mem.defaultUser?.id ?? '@me';
- items = await provider.searchWorkItems({ assigneeId, maxResults: 50 });
+ items = await provider.searchWorkItems({ assigneeId, maxResults: 500 });
  } catch { /* fall through to manual entry */ }
 
  type PickOption = { label: string; description: string; key: string; manual?: boolean };
@@ -1603,7 +1670,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  const userName = this.mem.defaultUser?.displayName ?? 'you';
 
  stream.progress(`Loading ${userName}'s items...`);
- const items = await provider.searchWorkItems({ assigneeId, maxResults: 50 });
+ const items = await provider.searchWorkItems({ assigneeId, maxResults: 500 });
 
  if (!items.length) {
  stream.markdown(
@@ -1778,7 +1845,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  platform: string = 'azuredevops'
  ): Promise<PmResultMeta> {
  // ── Consecutive filter menus: Type → Status → Sprint ────────────────
- const query: import('./types').WorkItemQuery = { maxResults: 200 };
+ const query: import('./types').WorkItemQuery = { maxResults: 500 };
 
  // 1. Type filter
  let types: string[] = [];
@@ -1857,7 +1924,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  let parentCandidates = [...all];
  if (all.length < 50) {
  try {
- const more = await provider.searchWorkItems({ status: 'open', maxResults: 200 });
+ const more = await provider.searchWorkItems({ status: 'open', maxResults: 500 });
  const existing = new Set(all.map(i => i.key));
  for (const item of more) { if (!existing.has(item.key)) { parentCandidates.push(item); } }
  } catch { /* use what we have */ }
@@ -1912,7 +1979,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  let items: WorkItem[] = [];
  try {
  const assigneeId = this.mem.defaultUser?.id ?? '@me';
- items = await provider.searchWorkItems({ assigneeId, maxResults: 100 });
+ items = await provider.searchWorkItems({ assigneeId, maxResults: 500 });
  } catch { /* fall through */ }
 
  // Build item options — last viewed item pre-selected if no key in intent
@@ -2146,10 +2213,10 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  let sourceItems: WorkItem[] = [];
  try {
  if (scopePick.value === 'all') {
- sourceItems = await sourceProvider.searchWorkItems({ maxResults: 200 });
+ sourceItems = await sourceProvider.searchWorkItems({ maxResults: 500 });
  } else {
  const assigneeId = this.mem.defaultUser?.id ?? '@me';
- sourceItems = await sourceProvider.searchWorkItems({ assigneeId, maxResults: 100 });
+ sourceItems = await sourceProvider.searchWorkItems({ assigneeId, maxResults: 500 });
  }
  } catch { /* fall through */ }
 
