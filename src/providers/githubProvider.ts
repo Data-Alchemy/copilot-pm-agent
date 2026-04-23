@@ -43,12 +43,13 @@ export class GitHubProvider {
     return res.json() as Promise<T>;
   }
 
-  private async graphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  private async graphql<T>(query: string, variables: Record<string, unknown> = {}, extraHeaders?: Record<string, string>): Promise<T> {
     const res = await globalThis.fetch('https://api.github.com/graphql', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.token}`,
         'Content-Type': 'application/json',
+        ...extraHeaders,
       },
       body: JSON.stringify({ query, variables }),
     });
@@ -444,13 +445,37 @@ export class GitHubProvider {
     const child = String(childNumber).replace(/^#/, '');
     const parent = String(parentNumber).replace(/^#/, '');
 
-    // Step 1: Fetch the child issue to get its numeric database id
-    const childIssue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${child}`);
-    const childId = childIssue.id; // numeric database ID e.g. 3000028010
+    // Fetch both issues to get node_id and numeric id
+    const [childIssue, parentIssue] = await Promise.all([
+      this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${child}`),
+      this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${parent}`)
+    ]);
 
-    // Step 2: Try REST sub-issues API with 2026-03-10
-    const url = `https://api.github.com/repos/${this.owner}/${this.repo}/issues/${parent}/sub_issues`;
+    // Step 1: Try GraphQL addSubIssue (most reliable per community reports)
+    // Requires GraphQL-Features: sub_issues header
     try {
+      await this.graphql(`
+        mutation($parentId: ID!, $childId: ID!) {
+          addSubIssue(input: { issueId: $parentId, subIssueId: $childId }) {
+            issue { id }
+            subIssue { id }
+          }
+        }
+      `, {
+        parentId: parentIssue.node_id,
+        childId: childIssue.node_id
+      }, {
+        'GraphQL-Features': 'sub_issues'
+      });
+      return;
+    } catch (e) {
+      console.log(`Sub-issue GraphQL failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // Step 2: Try REST sub-issues API with correct API version
+    // sub_issue_id must be the numeric database id (not issue number)
+    try {
+      const url = `https://api.github.com/repos/${this.owner}/${this.repo}/issues/${parent}/sub_issues`;
       const res = await globalThis.fetch(url, {
         method: 'POST',
         headers: {
@@ -459,7 +484,7 @@ export class GitHubProvider {
           'X-GitHub-Api-Version': '2026-03-10',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ sub_issue_id: childId }),
+        body: JSON.stringify({ sub_issue_id: childIssue.id }),
       });
       if (res.ok) { return; }
       const errBody = await res.text().catch(() => '');
@@ -468,22 +493,8 @@ export class GitHubProvider {
       console.log(`Sub-issue REST API error: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Step 3: Try GraphQL addSubIssue mutation
-    try {
-      const parentIssue = await this.rest<any>(`/repos/${this.owner}/${this.repo}/issues/${parent}`);
-      await this.graphql(`
-        mutation($parentId: ID!, $childId: ID!) {
-          addSubIssue(input: { issueId: $parentId, subIssueId: $childId }) {
-            issue { id }
-          }
-        }
-      `, { parentId: parentIssue.node_id, childId: childIssue.node_id });
-      return;
-    } catch (e) {
-      console.log(`Sub-issue GraphQL failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-
-    // Step 4: Comment fallback
+    // Step 3: Comment fallback
+    console.log(`Sub-issue APIs failed — falling back to comment for #${child} → #${parent}`);
     await this.addComment(child, `Parent: #${parent}`);
   }
 

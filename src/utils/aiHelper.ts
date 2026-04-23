@@ -565,8 +565,9 @@ export async function generateTasksForStory(
   let result: any;
   try {
     result = await callAi(config, system, user, requestModel);
-  } catch {
-    // AI returned non-JSON — return a single generic task so creation still works
+  } catch (e) {
+    // AI returned non-JSON — log and return a single generic task so creation still works
+    console.log(`Task generation AI parse error: ${e instanceof Error ? e.message : String(e)}`);
     return [{
       title: `Implement: ${storyTitle}`,
       description: storyWhat || storyTitle,
@@ -576,7 +577,17 @@ export async function generateTasksForStory(
     }];
   }
   // Handle both array response and {tasks: [...]} shape
-  const tasks: GeneratedTask[] = Array.isArray(result) ? result : (result.tasks ?? []);
+  const tasks: GeneratedTask[] = Array.isArray(result) ? result : (result?.tasks ?? []);
+  if (!tasks.length) {
+    console.log(`Task generation returned empty result: ${JSON.stringify(result).slice(0, 200)}`);
+    return [{
+      title: `Implement: ${storyTitle}`,
+      description: storyWhat || storyTitle,
+      effortPoints: 3,
+      area: 'Development',
+      suggestedType: 'Task'
+    }];
+  }
   // Normalise each task — AI may return objects/arrays for description
   return tasks.map(t => ({
     title:        typeof t.title       === 'string' ? t.title       : String(t.title ?? ''),
