@@ -6,6 +6,16 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [2.2.3] - 2026-04-23
+
+### Bug Fixes
+
+- GraphQL-Features sub_issues header, GraphQL-first parent linking, Epic→Feature→Task
+
+### Other Changes
+
+- Merge branch 'main' of https://github.com/Data-Alchemy/copilot-pm-agent
+
 ## [2.2.2] - 2026-04-23
 
 ### Bug Fixes
