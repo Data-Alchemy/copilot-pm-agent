@@ -6,6 +6,16 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [2.2.2] - 2026-04-23
+
+### Bug Fixes
+
+- correcting github parenting issue
+
+### Other Changes
+
+- Merge branch 'main' of https://github.com/Data-Alchemy/copilot-pm-agent
+
 ## [2.2.1] - 2026-04-22
 
 ### Bug Fixes
