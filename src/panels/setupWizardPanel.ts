@@ -690,6 +690,7 @@ function getScript(safeJson: string): string {
     '// Pre-fill',
     'if(pre.jiraBaseUrl) document.getElementById("jira-url").value = pre.jiraBaseUrl;',
     'if(pre.jiraEmail) document.getElementById("jira-email").value = pre.jiraEmail;',
+    'if(pre.jiraProject){ document.getElementById("jira-project").value = pre.jiraProject; setStatus("jira","ok","Current project: "+pre.jiraProject+" — click Load projects to change"); }',
     'if(pre.adoOrgUrl) document.getElementById("ado-org").value = pre.adoOrgUrl;',
     'if(pre._hasJiraToken){ var jt=document.getElementById("jira-token"); jt.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; jt.dataset.hasStored="1"; jt.addEventListener("input",function(){ jt.dataset.hasStored="0"; }); }',
     'if(pre._hasAdoToken){ var at=document.getElementById("ado-token"); at.value="\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022\\u2022"; at.dataset.hasStored="1"; at.addEventListener("input",function(){ at.dataset.hasStored="0"; }); }',

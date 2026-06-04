@@ -645,25 +645,40 @@ export class JiraProvider {
   async getProjectMembers(projectKey?: string): Promise<User[]> {
     const key = projectKey ?? this.defaultProject;
 
-    // Strategy 1: assignable users scoped to this project (most accurate)
-    // Strategy 2: all users via /users/search (broader, better for large orgs)
-    // Strategy 3: recent assignees from project issues (always works)
+    // Two complementary strategies, both scoped to the project:
+    //
+    // Strategy 1 — /user/assignable/search?project=KEY
+    //   Returns users who have the "Assignable User" permission in this project.
+    //   Most accurate for current membership. May return 0 results if the caller
+    //   token lacks "Browse Users" permission.
+    //
+    // Strategy 2 — recent assignees extracted from project issues
+    //   Always works regardless of permission level because it reads issue fields
+    //   the token can already see. Supplements Strategy 1 and acts as fallback.
+    //
+    // Intentionally removed: /users/search with empty query — that returns ALL
+    // active users across the entire Jira instance, not scoped to this project,
+    // which floods the picker with people who have never touched the board.
+
     const all: User[] = [];
     const seen = new Set<string>();
 
-    const addUser = (u: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const addUser = (u: any) => {
       const id = u.accountId ?? u.name ?? '';
       if (!id || seen.has(id)) { return; }
+      // Skip bot/service accounts (Jira marks them accountType = 'app' or 'customer')
+      if (u.accountType && u.accountType !== 'atlassian') { return; }
       seen.add(id);
       all.push({
         id,
         displayName: u.displayName ?? u.name ?? id,
         email:       u.emailAddress,
-        avatarUrl:   u.avatarUrls?.['48x48']
+        avatarUrl:   u.avatarUrls?.['48x48'],
       });
     };
 
-    // Strategy 1 — assignable/search for this project
+    // Strategy 1 — assignable users for this project
     try {
       let startAt = 0;
       while (true) {
@@ -679,44 +694,24 @@ export class JiraProvider {
       }
     } catch { /* fall through to strategy 2 */ }
 
-    // Strategy 2 — /users/search (Jira Cloud: returns active users searchable by query)
-    // Use empty query to get all users if strategy 1 returned nothing
-    if (all.length === 0) {
-      try {
-        let startAt = 0;
-        while (true) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const page = await this.http<any[]>(
-            `/users/search?maxResults=50&startAt=${startAt}`
-          );
-          if (!page?.length) { break; }
-          page.forEach(addUser);
-          if (page.length < 50) { break; }
-          startAt += page.length;
-          if (all.length >= 200) { break; }
-        }
-      } catch { /* fall through to strategy 3 */ }
-    }
-
-    // Strategy 3 — extract assignees from recent issues in the project
-    // Guaranteed to return at least the people who have worked on this project
-    if (all.length === 0) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const r = await this.http<any>('/search/jql', {
-          method: 'POST',
-          body: JSON.stringify({
-            jql:        `project = "${key}" AND assignee is not EMPTY ORDER BY updated DESC`,
-            maxResults: 50,
-            fields:     ['assignee']
-          })
-        });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        for (const issue of (r.issues ?? [])) {
-          if (issue.fields?.assignee) { addUser(issue.fields.assignee); }
-        }
-      } catch { /* give up */ }
-    }
+    // Strategy 2 — recent assignees from project issues (always scoped to project)
+    // Run regardless of strategy 1 result — catches people who are assignees
+    // on existing tickets but whose permissions have since changed.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = await this.http<any>('/search/jql', {
+        method: 'POST',
+        body: JSON.stringify({
+          jql:        `project = "${key}" AND assignee is not EMPTY ORDER BY updated DESC`,
+          maxResults: 100,
+          fields:     ['assignee'],
+        }),
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const issue of (r.issues ?? [])) {
+        if (issue.fields?.assignee) { addUser(issue.fields.assignee); }
+      }
+    } catch { /* give up */ }
 
     return all.sort((a, b) => a.displayName.localeCompare(b.displayName));
   }

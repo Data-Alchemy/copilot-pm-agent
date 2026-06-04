@@ -1680,23 +1680,23 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  return i === -1 ? this.STATUS_RANK_ORDER.length : i;
  }
 
- /** Single-select item picker â€” used by /comment, /estimate, /assign, /attach */
+ /** Single-select item picker â€” used by /comment, /estimate, /assign, /attach (scoped to assigned user) */
  private async pickWorkItem(
  stream: vscode.ChatResponseStream,
  provider: ReturnType<typeof createProvider>,
  title: string
  ): Promise<string | undefined> {
- const keys = await this.pickWorkItemKeys(stream, provider, title, false);
+ const keys = await this.pickWorkItemKeys(stream, provider, title, false, 'mine');
  return keys?.[0];
  }
 
- /** Multi-select item picker â€” used by /status */
+ /** Multi-select item picker â€” used by /status and /delete (shows full board, all assignees) */
  private async pickWorkItems(
  stream: vscode.ChatResponseStream,
  provider: ReturnType<typeof createProvider>,
  title: string
  ): Promise<string[] | undefined> {
- return this.pickWorkItemKeys(stream, provider, title, true);
+ return this.pickWorkItemKeys(stream, provider, title, true, 'board');
  }
 
  /**
@@ -1710,14 +1710,20 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  stream: vscode.ChatResponseStream,
  provider: ReturnType<typeof createProvider>,
  title: string,
- canPickMany: boolean
+ canPickMany: boolean,
+ scope: 'mine' | 'board' = 'mine'
  ): Promise<string[] | undefined> {
- stream.progress('Loading your work items...');
+ stream.progress(scope === 'board' ? 'Loading board items...' : 'Loading your work items...');
 
  let items: WorkItem[] = [];
  try {
+ if (scope === 'board') {
+ // Fetch all active items on the board â€” no assignee filter
+ items = await provider.searchWorkItems({ status: 'open', maxResults: 500 });
+ } else {
  const assigneeId = this.mem.defaultUser?.id ?? '@me';
  items = await provider.searchWorkItems({ assigneeId, maxResults: 500 });
+ }
  } catch { /* fall through to manual entry */ }
 
  // Sort items by status rank (in-progress first, done last)
@@ -3085,10 +3091,9 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} â†
  return { action: 'error' };
  }
  } else {
- stream.progress('Loading your items...');
+ stream.progress('Loading board items...');
  try {
- const assigneeId = this.mem.defaultUser?.id ?? '@me';
- candidates = await provider.searchWorkItems({ assigneeId, maxResults: 200 });
+ candidates = await provider.searchWorkItems({ status: 'open', maxResults: 500 });
  } catch {
  stream.markdown(formatError('Could not load items. Run `@pm /debug` to verify your connection.'));
  return { action: 'error' };
