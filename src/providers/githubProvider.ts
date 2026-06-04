@@ -3,7 +3,7 @@
 
 import {
   WorkItem, WorkItemType, User, Sprint, Project, Comment,
-  CreateWorkItemInput, UpdateWorkItemInput, WorkItemQuery,
+  CreateWorkItemInput, UpdateWorkItemInput, WorkItemQuery, WorkItemPage,
   ApiCredentials, AgentToolResult
 } from '../types';
 import { stripHtml } from '../utils/strings';
@@ -134,6 +134,25 @@ export class GitHubProvider {
     }
 
     return allItems;
+  }
+
+  /**
+   * Offset-based paging for "load more". ADO has no opaque cursor, so the
+   * cursor is simply the next offset encoded as a string. We over-fetch to
+   * (offset + pageSize + 1) and slice — fine for typical board sizes.
+   */
+  async searchWorkItemsPage(query: WorkItemQuery): Promise<WorkItemPage> {
+    const pageSize = query.maxResults ?? 25;
+    const offset   = query.pageCursor ? parseInt(query.pageCursor, 10) || 0 : 0;
+    // Fetch one extra to detect whether more pages exist
+    const all = await this.searchWorkItems({ ...query, maxResults: offset + pageSize + 1, pageCursor: undefined });
+    const slice = all.slice(offset, offset + pageSize);
+    const hasMore = all.length > offset + pageSize;
+    return {
+      items: slice,
+      nextCursor: hasMore ? String(offset + pageSize) : undefined,
+      isLast: !hasMore
+    };
   }
 
   /** Load items directly from GitHub Projects v2 board with their project-specific status */

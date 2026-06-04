@@ -93,6 +93,17 @@ export interface WorkItemQuery {
   sprintId?:    string;
   text?:        string;
   maxResults?:  number;
+  /** Opaque continuation cursor for "load more" (provider-specific encoding). */
+  pageCursor?:  string;
+}
+
+/** One page of work items plus a cursor for fetching the next page. */
+export interface WorkItemPage {
+  items:        WorkItem[];
+  /** Cursor to pass back as query.pageCursor for the next page; undefined when no more. */
+  nextCursor?:  string;
+  /** True when this is the final page (no more results). */
+  isLast:       boolean;
 }
 
 export interface ApiCredentials {

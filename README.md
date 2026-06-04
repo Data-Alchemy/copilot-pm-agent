@@ -249,3 +249,59 @@ To report a bug or request a feature:
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+## Agentic mode & agent interoperability
+
+PM Agent is both an agent you can talk to and a set of tools other agents can call.
+
+### Agentic mode (`@pm /agent`)
+
+Beyond the fixed slash-commands, `@pm /agent` accepts a free-form, multi-step
+request and lets the model plan and chain actions using PM Agent's tools:
+
+```
+@pm /agent find my in-progress bugs and move them all to the current sprint
+@pm /agent create a story "Checkout latency" and assign it to Jane
+```
+
+The model selects the right tools, resolves people to IDs, takes the actions,
+and reports back the affected item keys. (Requires an AI model — GitHub Copilot
+or a configured provider via `@pm /setupai`.)
+
+### Language Model Tools (callable by other agents)
+
+PM Agent registers its capabilities with VS Code's **Language Model Tools API**,
+so GitHub Copilot's agent mode — and any other extension — can invoke them
+directly. Every tool is headless and exchanges structured JSON (no pop-up
+prompts), which is what makes PM Agent safely callable from another agent.
+
+| Tool | Purpose |
+|------|---------|
+| `pm_listWorkItems` | Search/list items (paged via `nextCursor`) |
+| `pm_getWorkItem` | Fetch one item (+comments/children) |
+| `pm_createWorkItem` | Create an item (returns required-field info if any are missing) |
+| `pm_updateWorkItem` | Update fields / reassign |
+| `pm_transitionWorkItem` | Change status |
+| `pm_addComment` | Add a comment |
+| `pm_listProjectMembers` | Resolve people to IDs |
+| `pm_getSprints` | Active or all sprints |
+| `pm_listProjects` | Available projects |
+| `pm_getWorkItemTypes` | Valid issue types for a project |
+
+**Calling a PM Agent tool from another extension:**
+
+```ts
+const res = await vscode.lm.invokeTool('pm_listWorkItems', {
+  input: { status: 'open', assigneeId: '@me', maxResults: 25 },
+  toolInvocationToken: request.toolInvocationToken, // when inside a chat handler
+});
+const data = JSON.parse((res.content[0] as vscode.LanguageModelTextPart).value);
+// → { ok: true, count, items: [...], nextCursor, isLast }
+```
+
+All tools return `{ ok: true, ... }` on success or `{ ok: false, error }` on
+failure. `pm_createWorkItem` returns `error: "missing_required_fields"` with the
+list of field keys when a Jira project mandates fields you didn't supply — so a
+calling agent can re-invoke with them in `customFields`.

@@ -6,16 +6,6 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
-## [2.2.4] - 2026-06-04
-
-### Bug Fixes
-
-- fixing issues with jira api and updating creation flow for jira to handle context switching on different projects
-
-### Other Changes
-
-- fixing issues with jira api and updating creation flow for jira to handle context switching on different projects
-
 ## [2.2.3] - 2026-04-23
 
 ### Bug Fixes

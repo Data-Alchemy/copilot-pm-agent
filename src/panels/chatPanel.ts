@@ -9,6 +9,8 @@ import { CredentialManager } from '../utils/credentialManager';
 import { stripHtml } from '../utils/strings';
 import { createProvider } from '../providers/providerFactory';
 import { parseIntent } from '../utils/intentParser';
+import { formatWorkItemList } from '../utils/formatter';
+import { WorkItemQuery } from '../types';
 export class ChatPanel {
   static readonly viewType = 'pmAgent.chat';
   private static instance: ChatPanel | undefined;
@@ -96,6 +98,9 @@ export class ChatPanel {
 
   private _disposed = false;
 
+  /** Pagination state for the chat panel's "Load more" feature. */
+  private _listState?: { query: WorkItemQuery; cursor?: string; shown: number; label: string };
+
   // ── Message routing ────────────────────────────────────────────────────────
 
   private async handleMessage(msg: { type: string; text?: string; command?: string; url?: string }) {
@@ -110,7 +115,9 @@ export class ChatPanel {
       await this.processInput(msg.text.trim());
     }
     if (msg.type === 'chip' && msg.command) {
-      if (msg.command === '__setup__') {
+      if (msg.command === '__loadmore__') {
+        await this.handleLoadMore();
+      } else if (msg.command === '__setup__') {
         await vscode.commands.executeCommand('pm-agent.configurePlatform');
         this.send('bot', 'Platform configuration complete. Type /list to verify your connection.');
       } else if (msg.command === '__ai__') {
@@ -153,9 +160,21 @@ export class ChatPanel {
       switch (intent.kind) {
 
         case 'list': {
-          this.sendTyping(false);
-          const result = await this.runner.list();
-          this.send('bot', result);
+          // Build the same query the agent uses, then render the first page
+          // with a "Load more" button if there are more results.
+          const du = await this.credMgr.getDefaultUser();
+          const q: WorkItemQuery = intent.query ?? {};
+          if (!q.type && !q.status && !q.text && !q.sprintId && !q.assigneeId) {
+            if (du) { q.assigneeId = du.id; } else { q.status = 'open'; }
+          }
+          if (!q.status && !q.assigneeId) { q.status = 'open'; }
+          this._listState = {
+            query: q,
+            cursor: undefined,
+            shown: 0,
+            label: du?.displayName ?? 'project'
+          };
+          await this.renderNextListPage(provider, true);
           break;
         }
 
@@ -270,6 +289,78 @@ export class ChatPanel {
   }
 
   // ── Post message helpers ───────────────────────────────────────────────────
+
+  /**
+   * Render the next page of the active list query. Accumulates a running count,
+   * updates the cursor, and appends a "Load more" chip when more results exist.
+   */
+  private async renderNextListPage(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    provider: any,
+    isFirst: boolean
+  ): Promise<void> {
+    if (!this._listState) { return; }
+    const PAGE = 25;
+
+    // Fall back to a plain (non-paged) search if the provider lacks paging
+    if (typeof provider.searchWorkItemsPage !== 'function') {
+      this.sendTyping(false);
+      const items = await provider.searchWorkItems({ ...this._listState.query, maxResults: 200 });
+      this.send('bot', formatWorkItemList(items, `**${items.length}** item${items.length !== 1 ? 's' : ''}:`));
+      this._listState = undefined;
+      return;
+    }
+
+    try {
+      const page = await provider.searchWorkItemsPage({
+        ...this._listState.query,
+        pageCursor: this._listState.cursor,
+        maxResults: PAGE
+      });
+      this.sendTyping(false);
+
+      const total = this._listState.shown + page.items.length;
+
+      if (isFirst && page.items.length === 0) {
+        this.send('bot', `_No items found for ${this._listState.label}._`);
+        this._listState = undefined;
+        return;
+      }
+
+      const header = isFirst
+        ? `**${page.items.length}** item${page.items.length !== 1 ? 's' : ''} for ${this._listState.label}` +
+          (page.isLast ? ':' : ' (more available):')
+        : `**${page.items.length}** more — showing **${total}** so far:`;
+
+      this.send('bot', formatWorkItemList(page.items, header));
+
+      this._listState.shown  = total;
+      this._listState.cursor = page.nextCursor;
+
+      if (!page.isLast && page.nextCursor) {
+        this.send('bot', '_There are more results._', [{ label: 'Load more', cmd: '__loadmore__' }]);
+      } else {
+        this._listState = undefined; // exhausted — clear state
+      }
+    } catch (e: unknown) {
+      this.sendTyping(false);
+      const msg = e instanceof Error ? e.message : String(e);
+      this.send('bot', `**Could not load results:** ${msg.slice(0, 200)}`);
+      this._listState = undefined;
+    }
+  }
+
+  /** Handle the "Load more" chip — fetch and append the next page. */
+  private async handleLoadMore(): Promise<void> {
+    if (!this._listState) {
+      this.send('bot', 'Nothing to load — run `/list` first.');
+      return;
+    }
+    this.sendTyping(true);
+    const creds    = await this.credMgr.getCredentials();
+    const provider = createProvider(creds);
+    await this.renderNextListPage(provider, false);
+  }
 
   private send(role: 'user' | 'bot', text: string, chips?: Array<{ label: string; cmd: string }>) {
     if (this._disposed) { return; }

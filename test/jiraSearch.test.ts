@@ -68,3 +68,29 @@ describe('JiraProvider search uses the enhanced /search/jql endpoint', () => {
     expect(calls).toHaveLength(1); // isLast:true -> no second request
   });
 });
+
+describe('JiraProvider.searchWorkItemsPage (Load more)', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('returns a cursor when more pages exist, and none when last', async () => {
+    const { provider, calls } = makeProvider([
+      { issues: [issue('ENG-1')], nextPageToken: 'tok-2', isLast: false },
+    ]);
+    const page = await provider.searchWorkItemsPage({ assigneeId: '@me', maxResults: 1 });
+    expect(page.items.map(i => i.key)).toEqual(['ENG-1']);
+    expect(page.isLast).toBe(false);
+    expect(page.nextCursor).toBe('tok-2');
+    // first page must not send a token
+    expect(calls[0].body.nextPageToken).toBeUndefined();
+  });
+
+  it('passes the cursor back on the next page request', async () => {
+    const { provider, calls } = makeProvider([
+      { issues: [issue('ENG-2')], isLast: true },
+    ]);
+    const page = await provider.searchWorkItemsPage({ assigneeId: '@me', maxResults: 1, pageCursor: 'tok-2' });
+    expect(calls[0].body.nextPageToken).toBe('tok-2');
+    expect(page.isLast).toBe(true);
+    expect(page.nextCursor).toBeUndefined();
+  });
+});

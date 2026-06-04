@@ -2,7 +2,7 @@
   "name": "copilot-pm-agent",
   "displayName": "Copilot PM Agent",
   "description": "VS Code Agent that lets you open, estimate, and assign Jira & Azure DevOps work items via chat",
-  "version": "2.2.4",
+  "version": "2.5.1",
   "publisher": "DataAlchemy",
   "engines": {
     "vscode": "^1.95.0"
@@ -31,6 +31,10 @@
         "description": "Manage Jira and Azure DevOps work items from VS Code",
         "isSticky": true,
         "commands": [
+          {
+            "name": "agent",
+            "description": "Agentic mode \u2014 describe a multi-step task in plain language and let PM Agent plan & act"
+          },
           {
             "name": "list",
             "description": "List work items assigned to the default user"
@@ -93,7 +97,7 @@
           },
           {
             "name": "migrate",
-            "description": "Copy a work item from one platform to the other (ADO ↔ Jira)"
+            "description": "Copy a work item from one platform to the other (ADO \u2194 Jira)"
           }
         ]
       }
@@ -166,7 +170,7 @@
       },
       {
         "command": "pm-agent.migrate",
-        "title": "PM Agent: Migrate Ticket (ADO ↔ Jira)"
+        "title": "PM Agent: Migrate Ticket (ADO \u2194 Jira)"
       },
       {
         "command": "pm-agent.debug",
@@ -216,7 +220,7 @@
         },
         "pmAgent.github.projectNumber": {
           "type": "number",
-          "description": "GitHub Projects v2 number (optional — for project board integration)"
+          "description": "GitHub Projects v2 number (optional \u2014 for project board integration)"
         },
         "pmAgent.ai.provider": {
           "type": "string",
@@ -258,7 +262,374 @@
           "name": "Chat"
         }
       ]
-    }
+    },
+    "languageModelTools": [
+      {
+        "name": "pm_listWorkItems",
+        "displayName": "List/Search Work Items",
+        "modelDescription": "Search or list work items (issues/tickets) in the configured Jira, Azure DevOps, or GitHub project. Returns a page of items with a nextCursor for paging. Use assigneeId='@me' for the current default user; status='open' for not-done items.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmlistWorkItems",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "assigneeId": {
+              "type": "string",
+              "description": "Account ID or email to filter by, or '@me' for the current user"
+            },
+            "status": {
+              "type": "string",
+              "description": "'open' for not-done, or an exact status name like 'In Progress'"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "story",
+                "task",
+                "bug",
+                "epic",
+                "subtask",
+                "feature",
+                "testcase"
+              ],
+              "description": "Filter by work item type"
+            },
+            "text": {
+              "type": "string",
+              "description": "Free-text search across title/description"
+            },
+            "projectKey": {
+              "type": "string",
+              "description": "Override the default project"
+            },
+            "sprintId": {
+              "type": "string",
+              "description": "Filter to a sprint/iteration id"
+            },
+            "maxResults": {
+              "type": "number",
+              "description": "Page size (default 50)"
+            },
+            "pageCursor": {
+              "type": "string",
+              "description": "Cursor from a previous call's nextCursor to fetch the next page"
+            }
+          }
+        }
+      },
+      {
+        "name": "pm_getWorkItem",
+        "displayName": "Get Work Item",
+        "modelDescription": "Fetch a single work item by key (e.g. 'ENG-42', '#1234') including description, and optionally its comments and child items.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmgetWorkItem",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Work item key/id, e.g. ENG-42 or #1234"
+            },
+            "includeComments": {
+              "type": "boolean"
+            },
+            "includeChildren": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      },
+      {
+        "name": "pm_createWorkItem",
+        "displayName": "Create Work Item",
+        "modelDescription": "Create a work item. Provide type and title at minimum. For Jira projects with mandatory custom fields, pass them in customFields; if a required field is missing the tool returns error='missing_required_fields' listing the field keys so you can re-invoke with them.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmcreateWorkItem",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "story",
+                "task",
+                "bug",
+                "epic",
+                "subtask",
+                "feature",
+                "testcase"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "acceptanceCriteria": {
+              "type": "string"
+            },
+            "assigneeId": {
+              "type": "string"
+            },
+            "storyPoints": {
+              "type": "number"
+            },
+            "priority": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sprintId": {
+              "type": "string"
+            },
+            "parentId": {
+              "type": "string",
+              "description": "Parent work item key for sub-tasks/children"
+            },
+            "projectKey": {
+              "type": "string",
+              "description": "Target project (defaults to configured project)"
+            },
+            "rawTypeName": {
+              "type": "string",
+              "description": "Exact platform type name; bypasses type mapping"
+            },
+            "customFields": {
+              "type": "object",
+              "description": "Map of fieldKey->value for required custom fields",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "type",
+            "title"
+          ]
+        }
+      },
+      {
+        "name": "pm_updateWorkItem",
+        "displayName": "Update Work Item",
+        "modelDescription": "Update fields on an existing work item. Setting 'status' transitions it; setting 'assigneeId' reassigns it.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmupdateWorkItem",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "storyPoints": {
+              "type": "number"
+            },
+            "priority": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "status": {
+              "type": "string"
+            },
+            "assigneeId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      },
+      {
+        "name": "pm_transitionWorkItem",
+        "displayName": "Transition Work Item Status",
+        "modelDescription": "Move a work item to a new status/state (e.g. 'In Progress', 'Done'). Returns the updated item or the list of available transitions if the target is invalid.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmtransitionWorkItem",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "status"
+          ]
+        }
+      },
+      {
+        "name": "pm_addComment",
+        "displayName": "Add Comment",
+        "modelDescription": "Add a comment to a work item.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmaddComment",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "body"
+          ]
+        }
+      },
+      {
+        "name": "pm_listProjectMembers",
+        "displayName": "List Project Members",
+        "modelDescription": "List assignable members of a project (id, display name, email). Use to resolve a person's name to an assigneeId before creating/assigning.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmlistProjectMembers",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectKey": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
+        "name": "pm_getSprints",
+        "displayName": "Get Sprints",
+        "modelDescription": "Get the active sprint, or all sprints when all=true.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmgetSprints",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectKey": {
+              "type": "string"
+            },
+            "all": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      {
+        "name": "pm_listProjects",
+        "displayName": "List Projects",
+        "modelDescription": "List the projects available with the configured credentials.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmlistProjects",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "pm_getWorkItemTypes",
+        "displayName": "Get Work Item Types",
+        "modelDescription": "List the work item / issue type names available in a project. Useful before creating to pick a valid rawTypeName.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "pmgetWorkItemTypes",
+        "tags": [
+          "pm-agent",
+          "jira",
+          "azure-devops",
+          "github",
+          "work-items"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectKey": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",

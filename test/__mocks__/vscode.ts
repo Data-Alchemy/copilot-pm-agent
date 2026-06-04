@@ -90,6 +90,42 @@ export const env = {
 export const chat = undefined; // Copilot not available by default
 
 // Helper to create a mock ExtensionContext
+
+// ── Language Model + Tools API stubs ────────────────────────────────────────
+export class LanguageModelTextPart {
+  constructor(public value: string) {}
+}
+export class LanguageModelToolCallPart {
+  constructor(public callId: string, public name: string, public input: any) {}
+}
+export class LanguageModelToolResultPart {
+  constructor(public callId: string, public content: any[]) {}
+}
+export class LanguageModelToolResult {
+  constructor(public content: any[]) {}
+}
+export const LanguageModelChatToolMode = { Auto: 1, Required: 2 };
+export const LanguageModelChatMessage = {
+  User: (content: any) => ({ role: 'user', content }),
+  Assistant: (content: any) => ({ role: 'assistant', content }),
+};
+
+export const _lmRegistry = new Map<string, any>();
+export const lm = {
+  registerTool: jest.fn((name: string, tool: any) => {
+    _lmRegistry.set(name, tool);
+    return { dispose: () => _lmRegistry.delete(name) };
+  }),
+  get tools() {
+    return Array.from(_lmRegistry.keys()).map(name => ({ name, description: name, inputSchema: {} }));
+  },
+  invokeTool: jest.fn(async (name: string, options: any, token?: any) => {
+    const tool = _lmRegistry.get(name);
+    if (!tool) { throw new Error('no such tool: ' + name); }
+    return tool.invoke(options, token);
+  }),
+};
+
 export function createMockContext(overrides: Record<string, any> = {}): any {
   return {
     extensionUri: '/mock/extension',

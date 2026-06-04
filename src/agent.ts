@@ -93,6 +93,9 @@ export class PmAgent {
  const intent = parseIntent(request.command, request.prompt.trim());
  let meta: PmResultMeta = { action: intent.kind };
 
+ // Explicit agentic entry point: `@pm /agent <free-form, multi-step request>`
+ const forceAgentic = request.command === 'agent';
+
  // Only pass the model if we're actually allowed to use it.
  // If Copilot engine isn't installed or access is denied, use undefined
  // so all AI calls silently skip rather than throwing.
@@ -111,6 +114,16 @@ export class PmAgent {
     }
 
  try {
+ if (forceAgentic) {
+ const m = (aiConfig.provider === 'copilot' && this.canUseModel(request.model)) ? request.model : safeModel;
+ if (m && this.agenticToolsAvailable()) {
+ meta = await this.handleAgentic(request, stream, m, _token);
+ } else {
+ stream.markdown('Agentic mode needs an AI model and the Language Model Tools API. Configure Copilot or run `@pm /setupai`.');
+ meta = { action: 'help' };
+ }
+ return { metadata: { [RESULT_META_KEY]: meta } };
+ }
  switch (intent.kind) {
 
  // ── SET DEFAULT USER ──────────────────────────────────────────────────
@@ -162,6 +175,12 @@ export class PmAgent {
  ? `**${items.length}** item${items.length !== 1 ? 's' : ''} assigned to **${this.mem.defaultUser.displayName}**:`
  : `**${items.length}** item${items.length !== 1 ? 's' : ''} in the project:`;
  stream.markdown(formatWorkItemList(items, header));
+ if (items.length >= (q.maxResults ?? 200)) {
+ stream.markdown(
+ `\n_Showing the first **${items.length}**. There may be more — narrow with a filter ` +
+ '(e.g. `@pm list bugs in progress`) or open the Chat panel (**PM Agent: Open Chat**) and use **Load more**._\n'
+ );
+ }
  stream.markdown('\n_Click any key to open in browser · `@pm comment AB#123` to comment · `@pm summary` for overview_');
  }
  meta = { action: 'listed', itemCount: items.length };
@@ -428,8 +447,14 @@ export class PmAgent {
  }
 
  default: {
+ // Not a recognised command/keyword. If a model + tools are available, hand
+ // the request to the agentic loop so it can reason and chain PM tools.
+ if (safeModel && this.agenticToolsAvailable()) {
+ meta = await this.handleAgentic(request, stream, safeModel, _token);
+ } else {
  this.showHelp(stream);
  meta = { action: 'help' };
+ }
  break;
  }
  }
@@ -443,6 +468,117 @@ export class PmAgent {
  }
 
  // ── SET DEFAULT USER ────────────────────────────────────────────────────────
+
+  // ── Agentic loop ────────────────────────────────────────────────────────
+  // Lets the @pm participant reason over a free-form request and CHAIN the
+  // registered PM Language-Model Tools (list → resolve user → update, etc.).
+  // This is the genuinely "agentic" path: the model selects tools, we invoke
+  // them via vscode.lm.invokeTool, feed results back, and loop until done.
+
+  /** True when the LM Tools API is present and our pm_* tools are registered. */
+  private agenticToolsAvailable(): boolean {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const all = (vscode.lm as any)?.tools as ReadonlyArray<{ name: string }> | undefined;
+      return !!all && all.some(t => t.name.startsWith('pm_'));
+    } catch { return false; }
+  }
+
+  private async handleAgentic(
+    request: vscode.ChatRequest,
+    stream: vscode.ChatResponseStream,
+    model: vscode.LanguageModelChat,
+    token: vscode.CancellationToken
+  ): Promise<PmResultMeta> {
+    // Gather our tools from the global registry
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const allTools = ((vscode.lm as any).tools ?? []) as Array<{
+      name: string; description: string; inputSchema?: object;
+    }>;
+    const pmTools = allTools.filter(t => t.name.startsWith('pm_'));
+    const lmTools: vscode.LanguageModelChatTool[] = pmTools.map(t => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema ?? { type: 'object', properties: {} }
+    }));
+
+    const system =
+      'You are PM Agent, an assistant that manages Jira / Azure DevOps / GitHub work items. ' +
+      'Use the provided pm_* tools to fulfil the user request. Resolve people to IDs with ' +
+      'pm_listProjectMembers before assigning. Prefer pm_listWorkItems to find items by filter. ' +
+      'Take concrete actions when asked (create/update/transition/comment). When done, give a short ' +
+      'plain-language summary with the affected item keys. Do not invent keys or fields.';
+
+    const messages: vscode.LanguageModelChatMessage[] = [
+      vscode.LanguageModelChatMessage.User(system),
+      vscode.LanguageModelChatMessage.User(request.prompt)
+    ];
+
+    const MAX_TURNS = 6;
+    let lastText = '';
+    try {
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        if (token.isCancellationRequested) { break; }
+
+        const resp = await model.sendRequest(
+          messages,
+          { tools: lmTools, toolMode: vscode.LanguageModelChatToolMode.Auto },
+          token
+        );
+
+        const toolCalls: vscode.LanguageModelToolCallPart[] = [];
+        lastText = '';
+        for await (const part of resp.stream) {
+          if (part instanceof vscode.LanguageModelTextPart) {
+            lastText += part.value;
+            stream.markdown(part.value);
+          } else if (part instanceof vscode.LanguageModelToolCallPart) {
+            toolCalls.push(part);
+          }
+        }
+
+        // No tool calls => model is finished; we already streamed its prose.
+        if (toolCalls.length === 0) {
+          return { action: 'agentic' };
+        }
+
+        // Record the assistant turn (its tool calls) then invoke each tool.
+        messages.push(vscode.LanguageModelChatMessage.Assistant(toolCalls));
+
+        const resultParts: vscode.LanguageModelToolResultPart[] = [];
+        for (const call of toolCalls) {
+          const niceName = call.name.replace(/^pm_/, '');
+          stream.progress(`Running ${niceName}…`);
+          try {
+            const result = await vscode.lm.invokeTool(
+              call.name,
+              { input: call.input, toolInvocationToken: request.toolInvocationToken },
+              token
+            );
+            resultParts.push(new vscode.LanguageModelToolResultPart(call.callId, result.content));
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            resultParts.push(new vscode.LanguageModelToolResultPart(
+              call.callId,
+              [new vscode.LanguageModelTextPart(JSON.stringify({ ok: false, error: msg }))]
+            ));
+          }
+        }
+        // Feed tool results back to the model for the next turn.
+        messages.push(vscode.LanguageModelChatMessage.User(resultParts));
+      }
+
+      if (!lastText) {
+        stream.markdown('_Reached the step limit for this request. Try breaking it into smaller actions._');
+      }
+      return { action: 'agentic' };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      stream.markdown(formatError(`Agentic request failed: ${msg}`));
+      return { action: 'error' };
+    }
+  }
+
 
  private async handleSetUser(
  stream: vscode.ChatResponseStream,

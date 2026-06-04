@@ -1,7 +1,7 @@
 // src/providers/jiraProvider.ts
 import {
   WorkItem, WorkItemType, User, Sprint, Project, Comment,
-  CreateWorkItemInput, UpdateWorkItemInput, WorkItemQuery,
+  CreateWorkItemInput, UpdateWorkItemInput, WorkItemQuery, WorkItemPage,
   ApiCredentials, AgentToolResult
 } from '../types';
 
@@ -87,7 +87,12 @@ export class JiraProvider {
 
   // ── Search / List ─────────────────────────────────────────────────────────
 
-  async searchWorkItems(query: WorkItemQuery): Promise<WorkItem[]> {
+  /** Standard search-field set requested for list/search results. */
+  private static readonly SEARCH_FIELDS =
+    'summary,status,issuetype,assignee,reporter,priority,labels,customfield_10016,customfield_10028,customfield_10014,customfield_10020,created,updated,description,project,comment';
+
+  /** Build the JQL string from a structured query. */
+  private buildJql(query: WorkItemQuery): string {
     const parts: string[] = [];
     const project = query.projectKey ?? this.defaultProject;
     if (project) { parts.push(`project = "${project}"`); }
@@ -95,9 +100,6 @@ export class JiraProvider {
     if (query.assigneeId === '@me' || query.assigneeId === 'currentUser()') {
       parts.push(`assignee = currentUser()`);
     } else if (query.assigneeId) {
-      // Jira Cloud: accountId is a long hash string
-      // Jira Server: username or email
-      // In both cases, JQL `assignee = "value"` works — Jira resolves the identifier
       parts.push(`assignee = "${query.assigneeId.trim()}"`);
     }
 
@@ -123,14 +125,37 @@ export class JiraProvider {
     if (query.sprintId) { parts.push(`sprint = ${query.sprintId}`); }
     if (query.text)     { parts.push(`text ~ "${query.text}"`); }
 
-    const jql    = (parts.length ? parts.join(' AND ') : `project = "${project}"`) + ' ORDER BY updated DESC';
-    const fields = 'summary,status,issuetype,assignee,reporter,priority,labels,customfield_10016,customfield_10028,customfield_10014,customfield_10020,created,updated,description,project,comment';
+    return (parts.length ? parts.join(' AND ') : `project = "${project}"`) + ' ORDER BY updated DESC';
+  }
 
+  async searchWorkItems(query: WorkItemQuery): Promise<WorkItem[]> {
+    const jql = this.buildJql(query);
     const max = query.maxResults ?? 100;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const issues = await this.searchJql(jql, fields.split(','), max);
+    const issues = await this.searchJql(jql, JiraProvider.SEARCH_FIELDS.split(','), max);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return issues.map((i: any) => this.mapIssue(i));
+  }
+
+  /**
+   * Fetch a SINGLE page of results and return the cursor for the next page.
+   * Powers the "Load more" button in the chat panel. Uses the enhanced
+   * /search/jql endpoint's nextPageToken cursor (query.pageCursor carries it).
+   */
+  async searchWorkItemsPage(query: WorkItemQuery): Promise<WorkItemPage> {
+    const jql      = this.buildJql(query);
+    const pageSize = Math.min(query.maxResults ?? 25, 100);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body: any = { jql, maxResults: pageSize, fields: JiraProvider.SEARCH_FIELDS.split(',') };
+    if (query.pageCursor) { body.nextPageToken = query.pageCursor; }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = await this.http<any>('/search/jql', { method: 'POST', body: JSON.stringify(body) });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = (r.issues ?? []).map((i: any) => this.mapIssue(i));
+    const nextCursor: string | undefined = r.nextPageToken;
+    const isLast = r.isLast === true || !nextCursor || items.length === 0;
+    return { items, nextCursor: isLast ? undefined : nextCursor, isLast };
   }
 
   /**
@@ -879,15 +904,20 @@ export class JiraProvider {
         let startAt = 0;
         const maxResults = 50;
         let total = Infinity;
+        let guard = 0;                       // hard stop against pagination quirks
         while (startAt < total) {
+          if (++guard > 20) { break; }       // never more than 20 pages (1000 fields)
           const meta = await this.http<any>(
             `/issue/createmeta/${encodeURIComponent(project)}/issuetypes/${typeObj.id}?startAt=${startAt}&maxResults=${maxResults}`
           );
           const vals = meta?.values ?? [];
           allValues = allValues.concat(vals);
-          total = meta?.total ?? vals.length;
-          startAt += vals.length;
-          if (vals.length === 0 || startAt >= 500) { break; }
+          total = meta?.total ?? (startAt + vals.length);   // if no total, treat this as last page
+          // Advance by the page size we asked for, not by vals.length — some Jira
+          // instances return fewer values than `total` implies, which would stall
+          // `startAt` and loop forever. Stop as soon as a page is short/empty.
+          startAt += maxResults;
+          if (vals.length < maxResults || vals.length === 0 || allValues.length >= 500) { break; }
         }
         fieldEntries = allValues.map((v: any) => ({ key: v.fieldId ?? '', field: v }));
       } catch {

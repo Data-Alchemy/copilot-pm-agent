@@ -93,3 +93,33 @@ describe('package.json integrity', () => {
     });
   });
 });
+
+describe('languageModelTools contribution (agent interoperability)', () => {
+  const pkg = require('../package.json');
+
+  it('declares the pm_* tools so Copilot agent mode + other extensions can discover them', () => {
+    const tools = pkg.contributes.languageModelTools;
+    expect(Array.isArray(tools)).toBe(true);
+    const names = tools.map((t: any) => t.name);
+    expect(names).toEqual(expect.arrayContaining([
+      'pm_listWorkItems', 'pm_getWorkItem', 'pm_createWorkItem',
+      'pm_updateWorkItem', 'pm_transitionWorkItem', 'pm_addComment',
+      'pm_listProjectMembers', 'pm_getSprints', 'pm_listProjects', 'pm_getWorkItemTypes'
+    ]));
+  });
+
+  it('every tool has a modelDescription and inputSchema (required for model selection)', () => {
+    for (const t of pkg.contributes.languageModelTools) {
+      expect(typeof t.modelDescription).toBe('string');
+      expect(t.modelDescription.length).toBeGreaterThan(10);
+      expect(t.inputSchema).toBeDefined();
+      expect(t.inputSchema.type).toBe('object');
+    }
+  });
+
+  it('exposes the /agent slash command on the participant', () => {
+    const main = pkg.contributes.chatParticipants.find((c: any) => c.id === 'pm-agent.main');
+    const cmds = main.commands.map((c: any) => c.name);
+    expect(cmds).toContain('agent');
+  });
+});

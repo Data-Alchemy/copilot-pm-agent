@@ -5,13 +5,15 @@
 
 import {
   WorkItem, WorkItemType, User, Sprint, Project, Comment,
-  CreateWorkItemInput, UpdateWorkItemInput, WorkItemQuery,
+  CreateWorkItemInput, UpdateWorkItemInput, WorkItemQuery, WorkItemPage,
   AgentToolResult
 } from '../types';
 
 export interface IProvider {
   // ── Core CRUD ──────────────────────────────────────────────────────────
   searchWorkItems(query: WorkItemQuery): Promise<WorkItem[]>;
+  /** Optional paged search for "load more" UIs. */
+  searchWorkItemsPage?(query: WorkItemQuery): Promise<WorkItemPage>;
   getWorkItem(keyOrId: string): Promise<WorkItem>;
   createWorkItem(input: CreateWorkItemInput & {
     acceptanceCriteria?: string;

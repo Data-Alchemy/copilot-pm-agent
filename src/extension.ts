@@ -7,6 +7,7 @@ import { CommandRunner } from './commandRunner';
 import { ChatPanel } from './panels/chatPanel';
 import { SidebarViewProvider } from './panels/sidebarViewProvider';
 import { WorkItem } from './types';
+import { registerLanguageModelTools } from './tools';
 
 export function activate(context: vscode.ExtensionContext): void {
   const credMgr = new CredentialManager(context.secrets, context);
@@ -77,6 +78,17 @@ export function activate(context: vscode.ExtensionContext): void {
   } catch {
     // Chat API unavailable — command-palette mode still works
   }
+
+  // ── 3b. Language Model Tools (agent interoperability) ─────────────────────
+  // Exposes PM Agent's capabilities as headless, structured tools so that:
+  //   • GitHub Copilot's agent mode can select & chain them automatically, and
+  //   • OTHER extensions/agents can call them via vscode.lm.invokeTool(...).
+  // No-op on VS Code versions without the LM Tools API.
+  try {
+    for (const d of registerLanguageModelTools(credMgr)) {
+      context.subscriptions.push(d);
+    }
+  } catch { /* LM Tools API unavailable — participant + palette still work */ }
 
   // ── 4. Command Palette commands ───────────────────────────────────────────
   const reg = (id: string, fn: () => Promise<void>) =>
