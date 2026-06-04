@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { CredentialManager } from './utils/credentialManager';
 import { createProvider } from './providers/providerFactory';
 import { AdoProvider } from './providers/adoProvider';
+import { MissingFieldsError } from './providers/jiraProvider';
 import { parseIntent, ParsedIntent } from './utils/intentParser';
 import { formatWorkItem, formatWorkItemList, formatUserList, formatSuccess, formatError } from './utils/formatter';
 import { cap, stripHtml } from './utils/strings';
@@ -25,6 +26,7 @@ export interface PmResultMeta {
 interface PendingCreate {
  type?: WorkItemType;
  title?: string;
+ projectKey?: string; // optional target project override (defaults to configured project)
  description?: string;
  acceptanceCriteria?: string;
  priority?: string;
@@ -586,6 +588,179 @@ export class PmAgent {
 
  // ── CREATE ─────────────────────────────────────────────────────────────────
 
+ // ── Jira required-field helpers ─────────────────────────────────────────
+
+ /**
+  * Build the customFields map for a Jira create: apply stored per-type defaults,
+  * then proactively scan the target project's create screen and prompt for any
+  * required field that has no default. Returns undefined for non-Jira platforms.
+  */
+ private async resolveJiraCustomFields(
+   stream: vscode.ChatResponseStream,
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   provider: any,
+   platform: string,
+   rawTypeName: string | undefined,
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   p: any,
+   aiReady: boolean
+ ): Promise<Record<string, unknown> | undefined> {
+   if (platform !== 'jira' || !rawTypeName || !provider.getCreateFields) {
+     return undefined;
+   }
+   const projectKey: string | undefined = p.projectKey || undefined;
+   const customFields: Record<string, unknown> = {};
+
+   // 1. Apply stored defaults for this issue type
+   const allDefaults = this.credMgr.getJiraFieldDefaults();
+   const typeDefaults = allDefaults[rawTypeName] ?? {};
+   for (const [k, v] of Object.entries(typeDefaults)) {
+     customFields[k] = (v && typeof v === 'object' && 'id' in (v as any))
+       ? { id: (v as any).id }
+       : v;
+   }
+
+   // 2. Scan required fields for the TARGET project and prompt for missing ones
+   try {
+     stream.progress('Checking required fields for this project...');
+     const required = provider.getRequiredFieldsForCreate
+       ? await provider.getRequiredFieldsForCreate(rawTypeName, projectKey)
+       : (await provider.getCreateFields(rawTypeName, projectKey))
+           // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           .filter((f: any) => f.required);
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     // Only prompt up-front for dropdown-style required fields (allowedValues).
+     // These are unambiguous. Free-text/date/user required fields are deferred to
+     // the create-time retry so we don't over-prompt on optional-looking fields.
+     const missing = required.filter((f: any) =>
+       !customFields[f.key] && f.allowedValues && f.allowedValues.length
+     );
+     if (missing.length) {
+       stream.markdown(
+         `\n_This project requires ${missing.length} field${missing.length !== 1 ? 's' : ''}: ` +
+         missing.map((f: any) => '**' + f.name + '**').join(', ') + '._\n'
+       );
+       const keys = missing.map((f: { key: string }) => f.key);
+       const answered = await this.promptForJiraFields(
+         stream, provider, rawTypeName, keys, projectKey, p, aiReady, missing
+       );
+       Object.assign(customFields, answered ?? {});
+     }
+   } catch { /* scan failed — rely on stored defaults + create-time retry */ }
+
+   return Object.keys(customFields).length ? customFields : undefined;
+ }
+
+ /**
+  * Prompt the user for a specific set of Jira fields (by key) and return the
+  * values formatted for the Jira create API. Handles option/array/user/date/
+  * string/number field types. Used both proactively and on create-time retry.
+  */
+ private async promptForJiraFields(
+   stream: vscode.ChatResponseStream,
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   provider: any,
+   rawTypeName: string,
+   fieldKeys: string[],
+   projectKey: string | undefined,
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   p: any,
+   aiReady: boolean,
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   knownFields?: any[]
+ ): Promise<Record<string, unknown> | undefined> {
+   // Fetch field metadata if not supplied
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   let fields: any[] = knownFields ?? [];
+   if (!fields.length && provider.getCreateFields) {
+     try { fields = await provider.getCreateFields(rawTypeName, projectKey); }
+     catch { fields = []; }
+   }
+   const byKey = new Map<string, any>(fields.map((f: any) => [f.key, f]));
+   const result: Record<string, unknown> = {};
+   const combined = `${p.title ?? ''} ${p.description ?? ''}`.toLowerCase();
+
+   for (const key of fieldKeys) {
+     const field = byKey.get(key) ?? { key, name: key, type: 'string' as const };
+
+     // Option / array-of-option → single or multi QuickPick
+     if (field.allowedValues?.length) {
+       const isArray = field.type === 'array';
+       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       const suggestion = aiReady
+         ? field.allowedValues.find((v: any) => combined.includes(String(v.value).toLowerCase()))?.value
+         : undefined;
+       type FO = vscode.QuickPickItem & { fv: { id: string; value: string } };
+       const opts: FO[] = field.allowedValues.map((v: any) => ({
+         label: v.value + (suggestion === v.value ? '  (suggested)' : ''),
+         fv: v
+       }));
+       const pick = await vscode.window.showQuickPick(opts, {
+         title: `${field.name} (required)`,
+         placeHolder: isArray ? 'Select one or more, then Enter' : `Select a value for ${field.name}`,
+         canPickMany: isArray,
+         ignoreFocusOut: true
+       });
+       if (!pick || (Array.isArray(pick) && !pick.length)) { return undefined; }
+       result[key] = isArray
+         ? (pick as unknown as FO[]).map(x => ({ id: x.fv.id }))
+         : { id: (pick as FO).fv.id };
+       continue;
+     }
+
+     // User picker → use project members
+     if (field.type === 'user') {
+       let members: User[] = [];
+       try { members = await provider.getProjectMembers(projectKey); } catch { /* ignore */ }
+       if (members.length) {
+         type UO = vscode.QuickPickItem & { uid: string };
+         const opts: UO[] = members.map(m => ({ label: m.displayName, description: m.email, uid: m.id }));
+         const pick = await vscode.window.showQuickPick(opts, {
+           title: `${field.name} (required)`, placeHolder: 'Select a user', ignoreFocusOut: true
+         });
+         if (!pick) { return undefined; }
+         result[key] = { id: pick.uid };
+       } else {
+         const val = await vscode.window.showInputBox({
+           title: `${field.name} (required)`, prompt: 'Enter the account ID or email', ignoreFocusOut: true
+         });
+         if (!val?.trim()) { return undefined; }
+         result[key] = { id: val.trim() };
+       }
+       continue;
+     }
+
+     // Date → input box (ISO date)
+     if (field.type === 'date') {
+       const val = await vscode.window.showInputBox({
+         title: `${field.name} (required)`,
+         prompt: 'Enter a date (YYYY-MM-DD)',
+         placeHolder: new Date().toISOString().slice(0, 10),
+         ignoreFocusOut: true,
+         validateInput: v => /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? undefined : 'Use YYYY-MM-DD'
+       });
+       if (!val?.trim()) { return undefined; }
+       result[key] = val.trim();
+       continue;
+     }
+
+     // String / number / any → input box
+     const val = await vscode.window.showInputBox({
+       title: `${field.name} (required)`,
+       prompt: field.type === 'number' ? 'Enter a number' : 'Enter a value',
+       ignoreFocusOut: true,
+       validateInput: field.type === 'number'
+         ? v => (v.trim() === '' || !isNaN(Number(v)) ? undefined : 'Must be a number')
+         : undefined
+     });
+     if (!val?.trim()) { return undefined; }
+     result[key] = field.type === 'number' ? Number(val) : val.trim();
+   }
+
+   return result;
+ }
+
+
  private async handleCreate(
  stream: vscode.ChatResponseStream,
  provider: ReturnType<typeof createProvider>,
@@ -1040,92 +1215,56 @@ export class PmAgent {
 
  stream.progress('Creating story...');
 
- // Load stored field defaults and prompt for missing required fields (Jira only)
- let customFields: Record<string, unknown> | undefined;
- if (platform === 'jira' && rawTypeName) {
- customFields = {};
- const allDefaults = this.credMgr.getJiraFieldDefaults();
- const typeDefaults = allDefaults[rawTypeName] ?? {};
+ // Build customFields: stored defaults + prompt for any required fields the
+ // target project needs. Works for ANY project (uses target project key).
+ let customFields: Record<string, unknown> | undefined =
+   await this.resolveJiraCustomFields(stream, provider, platform, rawTypeName, p, aiReady);
 
- // Apply stored defaults
- for (const [k, v] of Object.entries(typeDefaults)) {
- if (v && typeof v === 'object' && 'id' in (v as any)) {
- customFields[k] = { id: (v as any).id };
- } else {
- customFields[k] = v;
- }
- }
-
- // Scan for required fields that still need values
- try {
+ // Create with a retry loop: if Jira rejects for missing required fields we
+ // couldn't detect up-front, prompt for exactly those and try again.
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
- const jiraP = provider as any;
- if (jiraP.getCreateFields) {
- stream.progress('Checking required fields...');
- const createFields = await jiraP.getCreateFields(rawTypeName);
- const missing = createFields.filter((f: any) =>
-   f.required && !customFields![f.key]
- );
-
- for (const field of missing) {
-   if (field.allowedValues?.length) {
-     // AI suggestion for option fields
-     let aiSuggestion: string | undefined;
-     if (aiReady && enhancement) {
-       const fieldDesc = `${field.name}: ${field.allowedValues.map((v: any) => v.value).join(', ')}`;
-       // Simple heuristic — check if AI description mentions any value
-       const combined = `${p.title} ${p.description ?? ''}`.toLowerCase();
-       aiSuggestion = field.allowedValues.find((v: any) =>
-         combined.includes(v.value.toLowerCase())
-       )?.value;
-     }
-
-     type FO = vscode.QuickPickItem & { fieldValue: { id: string; value: string } };
-     const opts: FO[] = field.allowedValues.map((v: any) => ({
-       label: v.value + (aiSuggestion === v.value ? ' (suggested)' : ''),
-       fieldValue: v
-     }));
-
-     const pick = await vscode.window.showQuickPick(opts, {
-       title: `${field.name} (required)`,
-       placeHolder: aiSuggestion ? `Suggested: ${aiSuggestion}` : `Select a value for ${field.name}`,
-       ignoreFocusOut: true
+ let created: any;
+ let createAttempts = 0;
+ while (true) {
+   createAttempts++;
+   try {
+     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     created = await (provider as any).createWorkItem({
+       type: p.type!,
+       title: p.title!,
+       description: p.description,
+       acceptanceCriteria: p.acceptanceCriteria,
+       storyPoints: p.storyPoints,
+       priority: p.priority,
+       assigneeId: p.assigneeId,
+       labels: p.labels,
+       sprintId: platform === 'azuredevops' ? p.iterationPath : p.sprintId,
+       parentId: p.parentId,
+       rawTypeName: rawTypeName,
+       customFields
      });
-     if (pick) {
-       customFields[field.key] = { id: pick.fieldValue.id };
+     break;
+   } catch (createErr: unknown) {
+     if (createErr instanceof MissingFieldsError && createAttempts <= 3) {
+       stream.markdown(
+         '\n**Jira needs a few more required fields for this project.** Let me prompt you for them.\n'
+       );
+       const extra = await this.promptForJiraFields(
+         stream, provider, rawTypeName!,
+         Object.keys(createErr.fieldErrors),
+         createErr.projectKey, p, aiReady
+       );
+       if (!extra || !Object.keys(extra).length) {
+         stream.markdown(formatError('Cancelled — required fields were not provided.'));
+         this.mem.pendingCreate = p;
+         return { action: 'error' };
+       }
+       customFields = { ...(customFields ?? {}), ...extra };
+       continue;
      }
-   } else if (field.type === 'string' || field.type === 'number') {
-     const val = await vscode.window.showInputBox({
-       title: `${field.name} (required)`,
-       prompt: field.type === 'number' ? 'Enter a number' : 'Enter a value',
-       ignoreFocusOut: true
-     });
-     if (val?.trim()) {
-       customFields[field.key] = field.type === 'number' ? Number(val) : val.trim();
-     }
+     throw createErr;
    }
  }
- }
- } catch { /* field scan failed — proceed with defaults only */ }
-
- if (!Object.keys(customFields).length) { customFields = undefined; }
- }
-
- // eslint-disable-next-line @typescript-eslint/no-explicit-any
- const created = await (provider as any).createWorkItem({
- type: p.type!,
- title: p.title!,
- description: p.description,
- acceptanceCriteria: p.acceptanceCriteria,
- storyPoints: p.storyPoints,
- priority: p.priority,
- assigneeId: p.assigneeId,
- labels: p.labels,
- sprintId: platform === 'azuredevops' ? p.iterationPath : p.sprintId,
- parentId: p.parentId,
- rawTypeName: rawTypeName,
- customFields
- });
 
  this.mem.lastItem = created;
  this.mem.pendingCreate = undefined;
@@ -2423,7 +2562,32 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  assigneeId,
  };
 
- const destItem = await destProvider.createWorkItem(createInput);
+ // Create with required-field retry (handles destination projects with
+ // mandatory custom fields). For Jira destinations we prompt; otherwise rethrow.
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ let destItem: any;
+ let migAttempts = 0;
+ while (true) {
+   migAttempts++;
+   try {
+     destItem = await destProvider.createWorkItem(createInput);
+     break;
+   } catch (mErr: unknown) {
+     if (mErr instanceof MissingFieldsError && migAttempts <= 3) {
+       stream.markdown(`\n**${destName} needs required fields for ${src.key}.** Please provide them.\n`);
+       const extra = await this.promptForJiraFields(
+         stream, destProvider, dstTypeName,
+         Object.keys(mErr.fieldErrors), mErr.projectKey, full, false
+       );
+       if (!extra || !Object.keys(extra).length) {
+         throw mErr; // user cancelled — surface as a failed item
+       }
+       createInput.customFields = { ...(createInput.customFields ?? {}), ...extra };
+       continue;
+     }
+     throw mErr;
+   }
+ }
 
  // Add migration note
  await destProvider.addComment(

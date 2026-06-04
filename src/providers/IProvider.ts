@@ -52,7 +52,10 @@ export interface IProvider {
   getWorkItemStates?(typeName: string): Promise<string[]>;
   getProjectStatuses?(): Promise<string[]>;
   getProjectFieldOptions?(): Promise<Array<{ name: string; type: string; options?: string[] }>>;
-  getCreateFields?(projectKey: string): Promise<any[]>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getCreateFields?(issueTypeName: string, projectKey?: string): Promise<any[]>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getRequiredFieldsForCreate?(issueTypeName: string, projectKey?: string): Promise<any[]>;
   getPriorities?(): Promise<string[]>;
   getLabels?(): Promise<string[]>;
   getStoryPointsField?(): Promise<string | null>;

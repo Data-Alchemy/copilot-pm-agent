@@ -185,14 +185,35 @@ export class SetupWizardPanel {
               }
               try {
                 const auth = 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
-                const res = await globalThis.fetch(`${baseUrl}/rest/api/3/myself`, {
-                  headers: { Authorization: auth, Accept: 'application/json' }
-                });
-                if (res.ok) {
-                  const user = await res.json() as any;
-                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: true, user: user.displayName ?? user.emailAddress ?? 'OK' });
+                const headers = { Authorization: auth, Accept: 'application/json' };
+
+                // Strategy 1: /myself — returns 403 on some instances if token lacks
+                // "View user profiles" scope. Try it first for the display name.
+                let displayName: string | undefined;
+                try {
+                  const meRes = await globalThis.fetch(`${baseUrl}/rest/api/3/myself`, { headers });
+                  if (meRes.ok) {
+                    const me = await meRes.json() as any;
+                    displayName = me.displayName ?? me.emailAddress;
+                  }
+                } catch { /* will fall through to serverInfo check */ }
+
+                // Strategy 2: /serverInfo — always accessible with any valid token,
+                // proves the token authenticates successfully even if /myself is restricted.
+                const infoRes = await globalThis.fetch(`${baseUrl}/rest/api/2/serverInfo`, { headers });
+                if (infoRes.ok || displayName) {
+                  panel.webview.postMessage({
+                    type: 'tokenStatus', platform: 'jira', valid: true,
+                    user: displayName ?? email
+                  });
                 } else {
-                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: false, error: `HTTP ${res.status}` });
+                  // Try v3 serverInfo as well
+                  const info3 = await globalThis.fetch(`${baseUrl}/rest/api/3/serverInfo`, { headers });
+                  if (info3.ok) {
+                    panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: true, user: displayName ?? email });
+                  } else {
+                    panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: false, error: `HTTP ${info3.status} — check your URL and token` });
+                  }
                 }
               } catch (err) {
                 panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: false, error: err instanceof Error ? err.message : String(err) });
@@ -658,7 +679,7 @@ function getScript(safeJson: string): string {
     'function activeTab(){ if(document.getElementById("tab-ado").classList.contains("active")) return "ado"; if(document.getElementById("tab-github").classList.contains("active")) return "github"; return "jira"; }',
     'function openUrl(key){ vscode.postMessage({type:"openUrl",url:key}); }',
     'function openAdoTokenPage(){ var orgUrl=document.getElementById("ado-org").value.trim(); var orgName=orgUrl?orgUrl.replace(/\\/$/, "").split("/").pop():null; var url=orgName?"https://dev.azure.com/"+orgName+"/_usersSettings/tokens":"https://dev.azure.com/_usersSettings/tokens"; vscode.postMessage({type:"openUrl",url:url}); }',
-    'function setStatus(platform,cls,html){ var el=document.getElementById(platform+"-project-status")||document.getElementById(platform+"-status"); if(!el)return; el.className="project-status"+(cls?" "+cls:""); el.innerHTML=html; }',
+    'function setStatus(platform,cls,html){ var el=document.getElementById(platform+"-project-status")||document.getElementById(platform+"-status")||document.getElementById(platform); if(!el)return; el.className="project-status"+(cls?" "+cls:""); el.innerHTML=html; }',
     '',
     'function fetchAdoProjects(){ var orgUrl=document.getElementById("ado-org").value.trim(); var token=document.getElementById("ado-token").value.trim(); if(!orgUrl||!token){setStatus("ado","error","Enter the Organisation URL and PAT first.");return;} setStatus("ado","","Loading projects..."); document.getElementById("ado-fetch-btn").disabled=true; vscode.postMessage({type:"fetchAdoProjects",orgUrl:orgUrl,token:token}); }',
     '',
@@ -715,10 +736,10 @@ function getScript(safeJson: string): string {
     '  var jtEl = document.getElementById("jira-token");',
     '  var baseUrl = document.getElementById("jira-url").value.trim();',
     '  var email = document.getElementById("jira-email").value.trim();',
-    '  if(!baseUrl || !email){ loading.style.display="none"; setStatus("jira-fields","error","Enter Jira URL and email first."); return; }',
+    '  if(!baseUrl || !email){ loading.style.display="none"; document.getElementById("jira-fields-status").textContent="Enter Jira URL and email first."; return; }',
     '  var hasStored = jtEl.dataset.hasStored === "1";',
     '  var token = hasStored ? "" : jtEl.value.trim();',
-    '  if(!hasStored && !token){ loading.style.display="none"; setStatus("jira-fields","error","Enter or save your API token first."); return; }',
+    '  if(!hasStored && !token){ loading.style.display="none"; document.getElementById("jira-fields-status").textContent="Enter or save your API token first."; return; }',
     '  if(hasStored){ vscode.postMessage({type:"fetchJiraFieldsStored", projectKey:projectKey}); }',
     '  else{ vscode.postMessage({type:"fetchJiraFields", baseUrl:baseUrl, email:email, token:token, projectKey:projectKey}); }',
     '}',
@@ -963,10 +984,12 @@ function getScript(safeJson: string): string {
     '  vscode.postMessage({type:"fetchGithubProjects",owner:owner,token:token,useStored:gtEl.dataset.hasStored==="1"});',
     '}',
     '',
-    '// Auto-validate stored tokens on load',
-    'if(pre._hasJiraToken && pre.jiraBaseUrl && pre.jiraEmail){ validateToken("jira"); }',
-    'if(pre._hasAdoToken && pre.adoOrgUrl){ validateToken("ado"); }',
-    'if(pre._hasGithubToken && pre.githubOwner){ validateToken("github"); }',
+    '// Auto-validate stored tokens on load — defer slightly so DOM is fully settled',
+    'setTimeout(function(){',
+    '  if(pre._hasJiraToken && pre.jiraBaseUrl && pre.jiraEmail){ validateToken("jira"); }',
+    '  if(pre._hasAdoToken && pre.adoOrgUrl){ validateToken("ado"); }',
+    '  if(pre._hasGithubToken && pre.githubOwner){ validateToken("github"); }',
+    '}, 200);',
     '',
     'function save(){',
     '  try{',

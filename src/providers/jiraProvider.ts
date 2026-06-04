@@ -5,6 +5,21 @@ import {
   ApiCredentials, AgentToolResult
 } from '../types';
 
+/**
+ * Thrown when Jira rejects a create because required fields are missing.
+ * Carries the list of field keys so the agent can prompt the user and retry.
+ */
+export class MissingFieldsError extends Error {
+  constructor(
+    public readonly fieldErrors: Record<string, string>,
+    public readonly projectKey: string,
+    public readonly issueType: string
+  ) {
+    super('Jira requires additional fields: ' + Object.values(fieldErrors).join('; '));
+    this.name = 'MissingFieldsError';
+  }
+}
+
 export class JiraProvider {
   private baseUrl:        string;
   private authHeader:     string;
@@ -35,9 +50,25 @@ export class JiraProvider {
     });
     if (!res.ok) {
       const b = await res.text();
-      throw new Error(`Jira ${res.status}: ${b.slice(0, 400)}`);
+      // Attach the raw body so callers can parse Jira's structured errors{} object
+      const e = new Error(`Jira ${res.status}: ${b.slice(0, 400)}`) as Error & { jiraBody?: string; jiraStatus?: number };
+      e.jiraBody   = b;
+      e.jiraStatus = res.status;
+      throw e;
     }
     return res.json() as Promise<T>;
+  }
+
+  /**
+   * Parse Jira's structured error body into a map of fieldKey -> message.
+   * Jira returns: { errorMessages: [...], errors: { customfield_10044: "X is required" } }
+   */
+  static parseFieldErrors(body: string | undefined): Record<string, string> {
+    if (!body) { return {}; }
+    try {
+      const parsed = JSON.parse(body) as { errors?: Record<string, string> };
+      return parsed.errors ?? {};
+    } catch { return {}; }
   }
 
   // Agile APIs live under a different path prefix
@@ -93,7 +124,7 @@ export class JiraProvider {
     if (query.text)     { parts.push(`text ~ "${query.text}"`); }
 
     const jql    = (parts.length ? parts.join(' AND ') : `project = "${project}"`) + ' ORDER BY updated DESC';
-    const fields = 'summary,status,issuetype,assignee,reporter,priority,labels,customfield_10016,customfield_10028,customfield_10014,story_points,customfield_10020,sprint,created,updated,description,project,comment';
+    const fields = 'summary,status,issuetype,assignee,reporter,priority,labels,customfield_10016,customfield_10028,customfield_10014,customfield_10020,created,updated,description,project,comment';
 
     const max = query.maxResults ?? 100;
     const allItems: WorkItem[] = [];
@@ -102,15 +133,20 @@ export class JiraProvider {
 
     while (allItems.length < max) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const r = await this.http<any>('/search/jql', {
-        method: 'POST',
-        body: JSON.stringify({
-          jql,
-          startAt,
-          maxResults: pageSize,
-          fields: fields.split(',')
-        })
-      });
+      let r: any;
+      try {
+        // Try the newer /search/jql POST endpoint first (Jira Cloud API v3)
+        r = await this.http<any>('/search/jql', {
+          method: 'POST',
+          body: JSON.stringify({ jql, startAt, maxResults: pageSize, fields: fields.split(',') })
+        });
+      } catch {
+        // Fall back to classic /search endpoint (Jira Server / older Cloud)
+        r = await this.http<any>('/search', {
+          method: 'POST',
+          body: JSON.stringify({ jql, startAt, maxResults: pageSize, fields: fields.split(',') })
+        });
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const issues = (r.issues ?? []).map((i: any) => this.mapIssue(i));
       allItems.push(...issues);
@@ -266,14 +302,41 @@ export class JiraProvider {
           created = await this.http<any>('/issue', { method: 'POST', body: JSON.stringify({ fields: noParent }) });
         }
       } else if (msg.includes('400')) {
-        // Strip the specific bad field and retry
+        // Parse Jira's structured errors{} to find EVERY rejected field.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const body = (err as any).jiraBody as string | undefined;
+        const fieldErrors = JiraProvider.parseFieldErrors(body);
+        const badKeys = Object.keys(fieldErrors);
+
+        // Separate "cannot be set / unknown field" errors (strip & retry) from
+        // "is required" errors (must prompt the user — can't invent a value).
+        const requiredMissing: Record<string, string> = {};
         const stripped: any = { ...fields };
-        const fm = msg.match(/'([^']+)'|"([^"]+)"/);
-        const bad = fm?.[1] ?? fm?.[2];
-        if (bad && !['Story','Task','Bug','Epic','Sub-task','Feature','Test'].includes(bad)) {
-          delete stripped[bad];
+        let strippedAny = false;
+        for (const k of badKeys) {
+          const m = (fieldErrors[k] || '').toLowerCase();
+          if (m.includes('required') && !(k in (input.customFields ?? {}))) {
+            requiredMissing[k] = fieldErrors[k];
+          } else {
+            // Field cannot be set on the create screen — strip and retry
+            if (k in stripped) { delete stripped[k]; strippedAny = true; }
+          }
         }
-        created = await this.http<any>('/issue', { method: 'POST', body: JSON.stringify({ fields: stripped }) });
+
+        if (Object.keys(requiredMissing).length) {
+          // Hand control back to the agent so it can prompt for these fields.
+          throw new MissingFieldsError(
+            requiredMissing,
+            this.defaultProject,
+            fields.issuetype?.name ?? issuetypeName
+          );
+        }
+
+        if (strippedAny) {
+          created = await this.http<any>('/issue', { method: 'POST', body: JSON.stringify({ fields: stripped }) });
+        } else {
+          throw err;
+        }
       } else {
         throw err;
       }
@@ -767,14 +830,15 @@ export class JiraProvider {
    * Returns each field's key, name, whether it's required, its type, and allowed values.
    * Skips fields already handled by the standard create flow.
    */
-  async getCreateFields(issueTypeName: string): Promise<Array<{
+  async getCreateFields(issueTypeName: string, projectKey?: string): Promise<Array<{
     key: string;
     name: string;
     required: boolean;
     type: 'string' | 'number' | 'option' | 'array' | 'user' | 'date' | 'any';
     allowedValues?: Array<{ id: string; value: string }>;
+    hasDefault?: boolean;
   }>> {
-    const project = this.defaultProject;
+    const project = projectKey || this.defaultProject;
     // Fields already handled by our standard create flow — don't show in the wizard
     const skip = new Set([
       'summary', 'issuetype', 'project', 'description', 'priority',
@@ -826,6 +890,7 @@ export class JiraProvider {
         key: string; name: string; required: boolean;
         type: 'string' | 'number' | 'option' | 'array' | 'user' | 'date' | 'any';
         allowedValues?: Array<{ id: string; value: string }>;
+        hasDefault?: boolean;
       }> = [];
 
       for (const { key, field } of fieldEntries) {
@@ -855,10 +920,11 @@ export class JiraProvider {
 
         result.push({
           key,
-          name:     field.name ?? key,
-          required: !!field.required,
+          name:       field.name ?? key,
+          required:   !!field.required,
           type,
           allowedValues,
+          hasDefault: !!field.hasDefaultValue,
         });
       }
 
@@ -872,6 +938,26 @@ export class JiraProvider {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Returns the required fields for a given issue type + project that the caller
+   * MUST supply a value for (required, no Jira default, not handled by standard flow).
+   * This is what the agent prompts the user for before creating in any project.
+   */
+  async getRequiredFieldsForCreate(
+    issueTypeName: string,
+    projectKey?: string
+  ): Promise<Array<{
+    key: string;
+    name: string;
+    type: 'string' | 'number' | 'option' | 'array' | 'user' | 'date' | 'any';
+    allowedValues?: Array<{ id: string; value: string }>;
+  }>> {
+    const all = await this.getCreateFields(issueTypeName, projectKey);
+    return all
+      .filter(f => f.required && !f.hasDefault)
+      .map(({ key, name, type, allowedValues }) => ({ key, name, type, allowedValues }));
   }
 
   /** Returns labels used in this project (best-effort — Jira label API is limited) */
