@@ -56,6 +56,10 @@ export class JiraProvider {
       e.jiraStatus = res.status;
       throw e;
     }
+    // 204 No Content (e.g. DELETE, some PUT responses) — no body to parse
+    if (res.status === 204 || res.headers?.get('content-length') === '0') {
+      return undefined as unknown as T;
+    }
     return res.json() as Promise<T>;
   }
 
