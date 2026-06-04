@@ -54,6 +54,7 @@ export class SetupWizardPanel {
       };
 
       panel.webview.onDidReceiveMessage(async (msg: any) => {
+        try {
         switch (msg.type) {
           case 'openUrl': {
             const raw = String(msg.url ?? '');
@@ -499,6 +500,14 @@ export class SetupWizardPanel {
             }
             break;
           }
+        }
+        } catch (handlerErr) {
+          // Surface any unhandled async error from message handlers to the user
+          // instead of silently swallowing it (VS Code doesn't propagate these)
+          panel.webview.postMessage({
+            type: 'saveError',
+            error: handlerErr instanceof Error ? handlerErr.message : String(handlerErr)
+          });
         }
       });
 
@@ -981,8 +990,8 @@ function getScript(safeJson: string): string {
     '  if(msg.type==="githubProjectsError"){ setStatus("github","error","Could not load projects: "+msg.error); }',
     '  if(msg.type==="typeMaps"){ renderTypeMaps(msg.platformTypes); }',
     '  if(msg.type==="typeMapsError"){ setStatus("typemap","error","Could not load types: "+msg.error); }',
-    '  if(msg.type==="saveSuccess"){ setStatus(msg.platform,"ok","Saved successfully. You can switch tabs to configure the other platform."); document.getElementById("save-btn").textContent="Save and Connect"; _lastSaved=msg.platform; }',
-    '  if(msg.type==="saveError"){ setStatus(activeTab(),"error","Save failed: "+msg.error); }',
+    '  if(msg.type==="saveSuccess"){ setStatus(msg.platform,"ok","Saved successfully!"); var sb=document.getElementById("save-btn"); sb.textContent="Save and Connect"; sb.disabled=false; _lastSaved=msg.platform; }',
+    '  if(msg.type==="saveError"){ var sb2=document.getElementById("save-btn"); sb2.textContent="Save and Connect"; sb2.disabled=false; setStatus(activeTab(),"error","Save failed: "+msg.error); }',
     '  if(msg.type==="tokenStatus"){',
     '    var el=document.getElementById(msg.platform+"-token-status");',
     '    if(el){',
@@ -1033,6 +1042,8 @@ function getScript(safeJson: string): string {
     '}, 200);',
     '',
     'function save(){',
+    '  var btn=document.getElementById("save-btn");',
+    '  btn.textContent="Saving..."; btn.disabled=true;',
     '  try{',
     '  var tab=activeTab();',
     '  var tm = {};',
@@ -1043,9 +1054,9 @@ function getScript(safeJson: string): string {
     '    var jtEl=document.getElementById("jira-token");',
     '    var project=document.getElementById("jira-project").value;',
     '    var token=jtEl.dataset.hasStored==="1"?"":jtEl.value.trim();',
-    '    if(!baseUrl){alert("Enter your Jira Base URL.");return;}',
-    '    if(!email){alert("Enter your Jira account email.");return;}',
-    '    if(!token&&jtEl.dataset.hasStored!=="1"){alert("Enter your Jira API token.");return;}',
+    '    if(!baseUrl){ btn.textContent="Save and Connect"; btn.disabled=false; alert("Enter your Jira Base URL.");return;}',
+    '    if(!email){ btn.textContent="Save and Connect"; btn.disabled=false; alert("Enter your Jira account email.");return;}',
+    '    if(!token&&jtEl.dataset.hasStored!=="1"){ btn.textContent="Save and Connect"; btn.disabled=false; alert("Enter your Jira API token.");return;}',
     '    var fd = {};',
     '    try{ fd = collectJiraFieldDefaults(); }catch(e){}',
     '    vscode.postMessage({type:"save",data:{platform:"jira",jiraBaseUrl:baseUrl,jiraEmail:email,jiraToken:token,jiraProject:project,jiraFieldDefaults:fd,typeMappings:tm}});',
@@ -1068,7 +1079,7 @@ function getScript(safeJson: string): string {
     '    if(!token2&&atEl.dataset.hasStored!=="1"){alert("Enter your Personal Access Token.");return;}',
     '    vscode.postMessage({type:"save",data:{platform:"azuredevops",adoOrgUrl:orgUrl,adoToken:token2,adoProject:project2,typeMappings:tm}});',
     '  }',
-    '  }catch(err){ setStatus(activeTab(),"error","Save error: "+err.message); }',
+    '  }catch(err){ btn.textContent="Save and Connect"; btn.disabled=false; setStatus(activeTab(),"error","Save error: "+err.message); }',
     '}',
   ].join('\n');
 }
