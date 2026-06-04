@@ -8,6 +8,16 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 <<<<<<< HEAD
 =======
+## [2.2.12] - 2026-06-04
+
+### Bug Fixes
+
+- Unexpected end of JSON input" on every single ticket when doing status
+
+### Other Changes
+
+- Merge branch 'main' of https://github.com/Data-Alchemy/copilot-pm-agent
+
 ## [2.2.11] - 2026-06-04
 
 ### Bug Fixes
