@@ -6,6 +6,38 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+<<<<<<< HEAD
+=======
+## [2.2.7] - 2026-06-04
+
+### Bug Fixes
+
+- total ticket list was not being retrieved
+
+## [2.2.6] - 2026-06-04
+
+### Bug Fixes
+
+- fixed the Scanning create screens… loop. 201 tests pass. The cycling between Scanning create screens
+
+## [2.2.5] - 2026-06-04
+
+### Bug Fixes
+
+- jira api issues CHANGE-2046
+- jira CHANGE-2046 removed search api causing the extension to break due to issue with searching tickets, updating api for new endpoint and logic
+
+## [2.2.4] - 2026-06-04
+
+### Bug Fixes
+
+- fixing issues with jira api and updating creation flow for jira to handle context switching on different projects
+
+### Other Changes
+
+- fixing issues with jira api and updating creation flow for jira to handle context switching on different projects
+
+>>>>>>> 42c6be9494ac23072ebfe0c7cc2c51a6b1f71580
 ## [2.2.3] - 2026-04-23
 
 ### Bug Fixes
