@@ -187,33 +187,43 @@ export class SetupWizardPanel {
                 const auth = 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
                 const headers = { Authorization: auth, Accept: 'application/json' };
 
-                // Strategy 1: /myself — returns 403 on some instances if token lacks
-                // "View user profiles" scope. Try it first for the display name.
-                let displayName: string | undefined;
-                try {
-                  const meRes = await globalThis.fetch(`${baseUrl}/rest/api/3/myself`, { headers });
-                  if (meRes.ok) {
-                    const me = await meRes.json() as any;
-                    displayName = me.displayName ?? me.emailAddress;
-                  }
-                } catch { /* will fall through to serverInfo check */ }
+                // /myself REQUIRES authentication, so it genuinely tests whether the
+                // token is active (unlike /serverInfo, which is public and would pass
+                // for any URL regardless of the token). Status interpretation:
+                //   200 -> valid, returns the user's name
+                //   401 -> INVALID: auth failed (bad/expired token or wrong email)
+                //   403 -> valid token that simply lacks the profile-view scope
+                const meRes = await globalThis.fetch(`${baseUrl}/rest/api/3/myself`, { headers });
 
-                // Strategy 2: /serverInfo — always accessible with any valid token,
-                // proves the token authenticates successfully even if /myself is restricted.
-                const infoRes = await globalThis.fetch(`${baseUrl}/rest/api/2/serverInfo`, { headers });
-                if (infoRes.ok || displayName) {
+                if (meRes.ok) {
+                  const me = await meRes.json() as any;
                   panel.webview.postMessage({
                     type: 'tokenStatus', platform: 'jira', valid: true,
-                    user: displayName ?? email
+                    user: me.displayName ?? me.emailAddress ?? email
                   });
-                } else {
-                  // Try v3 serverInfo as well
-                  const info3 = await globalThis.fetch(`${baseUrl}/rest/api/3/serverInfo`, { headers });
-                  if (info3.ok) {
-                    panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: true, user: displayName ?? email });
+                } else if (meRes.status === 401) {
+                  panel.webview.postMessage({
+                    type: 'tokenStatus', platform: 'jira', valid: false,
+                    error: 'HTTP 401 — token is invalid, expired, or the email is wrong'
+                  });
+                } else if (meRes.status === 403) {
+                  // Token authenticated but is scope-limited. Confirm it can actually
+                  // reach an authenticated, project-scoped endpoint before calling it valid.
+                  const probe = await globalThis.fetch(
+                    `${baseUrl}/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS`,
+                    { headers }
+                  );
+                  if (probe.status === 401) {
+                    panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: false, error: 'HTTP 401 — token is invalid or expired' });
                   } else {
-                    panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: false, error: `HTTP ${info3.status} — check your URL and token` });
+                    panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: true, user: email + ' (limited scope)' });
                   }
+                } else {
+                  const body = await meRes.text().catch(() => '');
+                  panel.webview.postMessage({
+                    type: 'tokenStatus', platform: 'jira', valid: false,
+                    error: `HTTP ${meRes.status}${body ? ' — ' + body.slice(0, 80) : ''}`
+                  });
                 }
               } catch (err) {
                 panel.webview.postMessage({ type: 'tokenStatus', platform: 'jira', valid: false, error: err instanceof Error ? err.message : String(err) });
@@ -230,14 +240,32 @@ export class SetupWizardPanel {
               }
               try {
                 const auth = 'Basic ' + Buffer.from(`:${token}`).toString('base64');
-                const res = await globalThis.fetch(`${orgUrl}/_apis/connectionData?api-version=7.1`, {
-                  headers: { Authorization: auth, Accept: 'application/json' }
-                });
+                const headers = { Authorization: auth, Accept: 'application/json' };
+
+                // Use _apis/projects as the auth probe — the same endpoint the
+                // project loader uses successfully. _apis/connectionData returns
+                // HTTP 400 on many org URL shapes (it expects a different host/
+                // routing), which produced false "Invalid" results on good tokens.
+                const res = await globalThis.fetch(`${orgUrl}/_apis/projects?$top=1&api-version=7.1`, { headers });
+
                 if (res.ok) {
-                  const data = await res.json() as any;
-                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'ado', valid: true, user: data.authenticatedUser?.providerDisplayName ?? 'OK' });
+                  // Optionally enrich with the signed-in user's name (best-effort)
+                  let who = 'OK';
+                  try {
+                    const cd = await globalThis.fetch(`${orgUrl}/_apis/connectionData?api-version=7.1`, { headers });
+                    if (cd.ok) {
+                      const d = await cd.json() as any;
+                      who = d.authenticatedUser?.providerDisplayName ?? d.authenticatedUser?.customDisplayName ?? 'OK';
+                    }
+                  } catch { /* name is optional */ }
+                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'ado', valid: true, user: who });
+                } else if (res.status === 401 || res.status === 403) {
+                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'ado', valid: false, error: `HTTP ${res.status} — PAT is invalid, expired, or lacks Work Items/Project Read scope` });
+                } else if (res.status === 404) {
+                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'ado', valid: false, error: 'HTTP 404 — check the Organisation URL (e.g. https://dev.azure.com/your-org)' });
                 } else {
-                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'ado', valid: false, error: `HTTP ${res.status}` });
+                  const body = await res.text().catch(() => '');
+                  panel.webview.postMessage({ type: 'tokenStatus', platform: 'ado', valid: false, error: `HTTP ${res.status}${body ? ' — ' + body.slice(0, 80) : ''}` });
                 }
               } catch (err) {
                 panel.webview.postMessage({ type: 'tokenStatus', platform: 'ado', valid: false, error: err instanceof Error ? err.message : String(err) });

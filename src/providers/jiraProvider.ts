@@ -127,35 +127,53 @@ export class JiraProvider {
     const fields = 'summary,status,issuetype,assignee,reporter,priority,labels,customfield_10016,customfield_10028,customfield_10014,customfield_10020,created,updated,description,project,comment';
 
     const max = query.maxResults ?? 100;
-    const allItems: WorkItem[] = [];
-    let startAt = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const issues = await this.searchJql(jql, fields.split(','), max);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return issues.map((i: any) => this.mapIssue(i));
+  }
+
+  /**
+   * Enhanced JQL search via POST /rest/api/3/search/jql.
+   *
+   * The legacy /rest/api/3/search endpoint was REMOVED by Atlassian (HTTP 410,
+   * changelog CHANGE-2046). The replacement differs in important ways:
+   *   - Pagination is cursor-based via `nextPageToken`, NOT `startAt`.
+   *   - The response has no `total` field; `isLast`/absent token signals the end.
+   *   - `fields` must be passed explicitly as an array.
+   * This helper handles the token loop and returns the raw issue objects.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async searchJql(jql: string, fields: string[], max: number): Promise<any[]> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const all: any[] = [];
+    let nextPageToken: string | undefined = undefined;
     const pageSize = Math.min(max, 100);
 
-    while (allItems.length < max) {
+    do {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let r: any;
-      try {
-        // Try the newer /search/jql POST endpoint first (Jira Cloud API v3)
-        r = await this.http<any>('/search/jql', {
-          method: 'POST',
-          body: JSON.stringify({ jql, startAt, maxResults: pageSize, fields: fields.split(',') })
-        });
-      } catch {
-        // Fall back to classic /search endpoint (Jira Server / older Cloud)
-        r = await this.http<any>('/search', {
-          method: 'POST',
-          body: JSON.stringify({ jql, startAt, maxResults: pageSize, fields: fields.split(',') })
-        });
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const issues = (r.issues ?? []).map((i: any) => this.mapIssue(i));
-      allItems.push(...issues);
-      startAt += issues.length;
-      // Stop if fewer results than page size (last page) or reached total
-      if (issues.length < pageSize || allItems.length >= (r.total ?? max)) { break; }
-    }
+      const body: any = { jql, maxResults: pageSize, fields };
+      // Only include the token on subsequent pages — passing null on page 1
+      // triggers "next page token is invalid or expired".
+      if (nextPageToken) { body.nextPageToken = nextPageToken; }
 
-    return allItems;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = await this.http<any>('/search/jql', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      });
+
+      const pageIssues = r.issues ?? [];
+      all.push(...pageIssues);
+      nextPageToken = r.nextPageToken; // undefined when no more pages
+
+      // Stop when: API says last page, no token returned, empty page, or cap hit
+      if (r.isLast === true || !nextPageToken || pageIssues.length === 0 || all.length >= max) {
+        break;
+      }
+    } while (nextPageToken);
+
+    return all.slice(0, max);
   }
 
   // ── Single item ───────────────────────────────────────────────────────────
@@ -531,12 +549,10 @@ export class JiraProvider {
     try {
       // JQL: parent = KEY returns subtasks and child issues
       const jql = `parent = "${parentKey}" ORDER BY created ASC`;
+      const fields = ['summary','status','issuetype','assignee','priority','labels','customfield_10016','customfield_10028','customfield_10014','description','project','comment'];
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const r = await this.http<any>('/search/jql', {
-        method: 'POST',
-        body: JSON.stringify({ jql, fields: 'summary,status,issuetype,assignee,priority,labels,customfield_10016,customfield_10028,customfield_10014,story_points,description,project,comment', maxResults: 100 })
-      });
-      return (r.issues ?? []).map((i: any) => this.mapIssue(i));
+      const issues = await this.searchJql(jql, fields, 100);
+      return issues.map((i: any) => this.mapIssue(i));
     } catch {
       return [];
     }
