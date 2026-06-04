@@ -8,6 +8,12 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 <<<<<<< HEAD
 =======
+## [2.2.8] - 2026-06-04
+
+### Bug Fixes
+
+- total ticket list was not being retrieved
+
 ## [2.2.7] - 2026-06-04
 
 ### Bug Fixes
