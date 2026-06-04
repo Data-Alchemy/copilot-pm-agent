@@ -131,10 +131,13 @@ export class JiraProvider {
   async searchWorkItems(query: WorkItemQuery): Promise<WorkItem[]> {
     const jql = this.buildJql(query);
     const max = query.maxResults ?? 100;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const issues = await this.searchJql(jql, JiraProvider.SEARCH_FIELDS.split(','), max);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return issues.map((i: any) => this.mapIssue(i));
+    const items = issues.map((i: any) => this.mapIssue(i));
+    // Carry the truncation flag through so callers can tell the user there are more
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (items as any)._truncated = (issues as any)._truncated ?? false;
+    return items;
   }
 
   /**
@@ -193,12 +196,18 @@ export class JiraProvider {
       nextPageToken = r.nextPageToken; // undefined when no more pages
 
       // Stop when: API says last page, no token returned, empty page, or cap hit
+      const cappedOut = all.length >= max && (!!nextPageToken || r.isLast === false);
       if (r.isLast === true || !nextPageToken || pageIssues.length === 0 || all.length >= max) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (all as any)._truncated = cappedOut;
         break;
       }
     } while (nextPageToken);
 
-    return all.slice(0, max);
+    const result = all.slice(0, max);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (result as any)._truncated = (all as any)._truncated ?? false;
+    return result;
   }
 
   // ── Single item ───────────────────────────────────────────────────────────

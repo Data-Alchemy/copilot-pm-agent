@@ -177,10 +177,12 @@ export class PmAgent {
  : `${items.length} item${items.length !== 1 ? 's' : ''} in the project`;
  // Items are grouped by status (in-progress first) via formatWorkItemList
  stream.markdown(formatWorkItemList(items, header));
- if (items.length >= (q.maxResults ?? 200)) {
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ const truncated = (items as any)._truncated === true;
+ if (truncated) {
  stream.markdown(
- `\n_Showing the first **${items.length}**. There may be more — narrow with a filter ` +
- '(e.g. `@pm list bugs in progress`) or use **Load more** in the Chat panel._\n'
+ `\n_Showing **${items.length}** items — there are more not shown. ` +
+ 'Narrow with a filter (e.g. `@pm list bugs in progress`) or use **Load more** in the PM Agent Chat panel._\n'
  );
  }
  stream.markdown('\n_`@pm /summary` for an aggregate overview · `@pm comment KEY` to comment_');
