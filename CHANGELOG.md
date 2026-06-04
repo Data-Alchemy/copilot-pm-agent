@@ -8,6 +8,12 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 <<<<<<< HEAD
 =======
+## [2.2.9] - 2026-06-04
+
+### Bug Fixes
+
+- update grouping for list command
+
 ## [2.2.8] - 2026-06-04
 
 ### Bug Fixes
