@@ -6,6 +6,13 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 ---
 
+## [2.2.5] - 2026-06-04
+
+### Bug Fixes
+
+- jira api issues CHANGE-2046
+- jira CHANGE-2046 removed search api causing the extension to break due to issue with searching tickets, updating api for new endpoint and logic
+
 ## [2.2.4] - 2026-06-04
 
 ### Bug Fixes
