@@ -2,7 +2,7 @@
   "name": "copilot-pm-agent",
   "displayName": "Copilot PM Agent",
   "description": "VS Code Agent that lets you open, estimate, and assign Jira & Azure DevOps work items via chat",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "publisher": "DataAlchemy",
   "engines": {
     "vscode": "^1.95.0"
@@ -33,7 +33,7 @@
         "commands": [
           {
             "name": "agent",
-            "description": "Agentic mode \u2014 describe a multi-step task in plain language and let PM Agent plan & act"
+            "description": "Agentic mode — describe a multi-step task in plain language and let PM Agent plan & act"
           },
           {
             "name": "list",
@@ -97,7 +97,7 @@
           },
           {
             "name": "migrate",
-            "description": "Copy a work item from one platform to the other (ADO \u2194 Jira)"
+            "description": "Copy a work item from one platform to the other (ADO ↔ Jira)"
           }
         ]
       }
@@ -170,7 +170,7 @@
       },
       {
         "command": "pm-agent.migrate",
-        "title": "PM Agent: Migrate Ticket (ADO \u2194 Jira)"
+        "title": "PM Agent: Migrate Ticket (ADO ↔ Jira)"
       },
       {
         "command": "pm-agent.debug",
@@ -220,7 +220,7 @@
         },
         "pmAgent.github.projectNumber": {
           "type": "number",
-          "description": "GitHub Projects v2 number (optional \u2014 for project board integration)"
+          "description": "GitHub Projects v2 number (optional — for project board integration)"
         },
         "pmAgent.ai.provider": {
           "type": "string",

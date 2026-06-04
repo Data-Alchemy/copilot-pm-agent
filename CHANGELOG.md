@@ -8,6 +8,12 @@ This project follows [Semantic Versioning](https://semver.org/) and uses [Conven
 
 <<<<<<< HEAD
 =======
+## [2.2.6] - 2026-06-04
+
+### Bug Fixes
+
+- fixed the Scanning create screens… loop. 201 tests pass. The cycling between Scanning create screens
+
 ## [2.2.5] - 2026-06-04
 
 ### Bug Fixes
