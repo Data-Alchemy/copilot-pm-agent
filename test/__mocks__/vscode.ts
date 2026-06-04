@@ -9,6 +9,7 @@ export const Uri = {
 export const ViewColumn = { One: 1, Two: 2, Three: 3 };
 export const StatusBarAlignment = { Left: 1, Right: 2 };
 export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 };
+export const QuickPickItemKind = { Separator: -1, Default: 0 };
 
 // Track all registered commands, providers, serializers
 export const _registered = {

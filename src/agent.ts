@@ -1663,76 +1663,168 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  // Shown when the user runs @pm comment or @pm assign without specifying a key.
  // Fetches their assigned items and shows a searchable list.
  // Falls back to manual key entry at the bottom of the list.
+ // ── Work item picker ──────────────────────────────────────────────────────
+ // Shared by /status, /comment, /estimate, /assign.
+ // canPickMany=true used by /status so multiple items can be transitioned at once.
+
+ private readonly STATUS_RANK_ORDER = [
+ 'in progress','in review','active','in development',
+ 'to do','open','new','backlog',
+ 'blocked','on hold',
+ 'done','closed','resolved',
+ ];
+
+ private statusRank(s: string): number {
+ const lower = s.toLowerCase();
+ const i = this.STATUS_RANK_ORDER.findIndex(x => lower.includes(x));
+ return i === -1 ? this.STATUS_RANK_ORDER.length : i;
+ }
+
+ /** Single-select item picker — used by /comment, /estimate, /assign, /attach */
  private async pickWorkItem(
  stream: vscode.ChatResponseStream,
  provider: ReturnType<typeof createProvider>,
  title: string
  ): Promise<string | undefined> {
+ const keys = await this.pickWorkItemKeys(stream, provider, title, false);
+ return keys?.[0];
+ }
+
+ /** Multi-select item picker — used by /status */
+ private async pickWorkItems(
+ stream: vscode.ChatResponseStream,
+ provider: ReturnType<typeof createProvider>,
+ title: string
+ ): Promise<string[] | undefined> {
+ return this.pickWorkItemKeys(stream, provider, title, true);
+ }
+
+ /**
+ * Core picker implementation.
+ * Items are grouped by status under QuickPickItemKind.Separator headers
+ * (in-progress first, done last) so the user immediately sees where their
+ * work sits without having to read every row.
+ * canPickMany=true enables Space to multi-select.
+ */
+ private async pickWorkItemKeys(
+ stream: vscode.ChatResponseStream,
+ provider: ReturnType<typeof createProvider>,
+ title: string,
+ canPickMany: boolean
+ ): Promise<string[] | undefined> {
  stream.progress('Loading your work items...');
 
  let items: WorkItem[] = [];
  try {
- // Use default user if set, otherwise try @me
  const assigneeId = this.mem.defaultUser?.id ?? '@me';
  items = await provider.searchWorkItems({ assigneeId, maxResults: 500 });
  } catch { /* fall through to manual entry */ }
 
- type PickOption = { label: string; description: string; key: string; manual?: boolean };
+ // Sort items by status rank (in-progress first, done last)
+ const sorted = [...items].sort((a, b) => this.statusRank(a.status) - this.statusRank(b.status));
 
+ // Build a QuickPickItem list with Separator headers between status groups
+ type PickOption = vscode.QuickPickItem & { key: string; manual?: boolean };
  const options: PickOption[] = [];
 
- // Last viewed item at the top for convenience
- if (this.mem.lastItem) {
+ // "Last viewed" pinned at the very top (single-select only — doesn't make
+ // sense to pre-pin in multi-select because the user is batch-selecting)
+ if (!canPickMany && this.mem.lastItem) {
+ const li = this.mem.lastItem;
+ const liPts = li.storyPoints ?? li.effort;
  options.push({
- label: `${this.mem.lastItem.key} — ${this.mem.lastItem.title}`,
- description: `Last viewed · ${this.mem.lastItem.status}`,
- key: this.mem.lastItem.key
+ label:       `${li.key} — ${li.title}`,
+ description: `Last viewed`,
+ detail:      [cap(li.type), li.status, liPts !== undefined ? `${liPts} pts` : ''].filter(Boolean).join(' · '),
+ key:         li.key,
+ kind:        vscode.QuickPickItemKind.Default,
  });
+ options.push({ label: '', kind: vscode.QuickPickItemKind.Separator, key: '' });
  }
 
- // Assigned items
- for (const item of items) {
- // Skip if already shown as last item
- if (item.key === this.mem.lastItem?.key) { continue; }
+ // Group remaining items by status, insert a Separator before each new group
+ let lastStatus = '';
+ for (const item of sorted) {
+ if (!canPickMany && item.key === this.mem.lastItem?.key) { continue; }
+
+ if (item.status !== lastStatus) {
+ // Count items in this status group for the header label
+ const groupCount = sorted.filter(i => i.status === item.status &&
+ (canPickMany || i.key !== this.mem.lastItem?.key)).length;
+ options.push({
+ label:  `${item.status}  (${groupCount})`,
+ kind:   vscode.QuickPickItemKind.Separator,
+ key:    '',
+ });
+ lastStatus = item.status;
+ }
+
  const pts = item.storyPoints ?? item.effort;
  options.push({
- label: `${item.key} — ${item.title}`,
+ label:       `${item.key} — ${item.title}`,
  description: [
- item.status,
+ cap(item.type),
  pts !== undefined ? `${pts} pts` : '',
- item.sprint ? item.sprint.split('\\').pop() ?? item.sprint : ''
+ item.sprint ? item.sprint.split('\\').pop() ?? item.sprint : '',
  ].filter(Boolean).join(' · '),
- key: item.key
+ detail:      item.assignee?.displayName,
+ key:         item.key,
+ kind:        vscode.QuickPickItemKind.Default,
  });
  }
 
- // Manual entry option at the bottom
+ // Manual entry — single-select only
+ if (!canPickMany) {
+ options.push({ label: '', kind: vscode.QuickPickItemKind.Separator, key: '' });
  options.push({
- label: 'Enter key manually...',
- description: 'Type the work item key (e.g. #1234 or ENG-42)',
- key: '',
- manual: true
+ label:       'Enter key manually...',
+ description: 'e.g. #1234 or ENG-42',
+ key:         '',
+ manual:      true,
+ kind:        vscode.QuickPickItemKind.Default,
  });
+ }
 
+ const itemCount = items.length;
+ const hint = canPickMany ? 'Space to select multiple, Enter to confirm' : 'type to search';
+ const placeHolder = canPickMany
+ ? 'Space to select · Enter to confirm · Items grouped by status'
+ : 'Search by key, title, type, or sprint — all items listed by status';
+
+ if (canPickMany) {
  const picked = await vscode.window.showQuickPick(options, {
- title,
- placeHolder: 'Search by key or title, or enter manually',
- ignoreFocusOut: true
- });
+ title:             `${title} — ${itemCount} item${itemCount !== 1 ? 's' : ''} (${hint})`,
+ placeHolder,
+ canPickMany:       true,
+ ignoreFocusOut:    true,
+ matchOnDescription: true,
+ matchOnDetail:      true,
+ }) as PickOption[] | undefined;
+ if (!picked?.length) { return undefined; }
+ return picked.filter(p => p.key && !p.manual).map(p => p.key);
+ } else {
+ const picked = await vscode.window.showQuickPick(options, {
+ title:             `${title} — ${itemCount} item${itemCount !== 1 ? 's' : ''} (${hint})`,
+ placeHolder,
+ ignoreFocusOut:    true,
+ matchOnDescription: true,
+ matchOnDetail:      true,
+ }) as PickOption | undefined;
 
  if (!picked) { return undefined; }
 
  if (picked.manual) {
  const k = await vscode.window.showInputBox({
- title: 'Work item key',
- prompt: 'Enter the key of the work item',
- placeHolder: 'e.g. #1234 or ENG-42',
- ignoreFocusOut: true
+ title:          'Work item key',
+ prompt:         'Enter the key of the work item',
+ placeHolder:    'e.g. #1234 or ENG-42',
+ ignoreFocusOut: true,
  });
- return k?.trim() || undefined;
+ return k?.trim() ? [k.trim()] : undefined;
  }
 
- return picked.key;
+ return picked.key ? [picked.key] : undefined;
+ }
  }
 
  private async handleComment(
@@ -1820,47 +1912,65 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  intent: ParsedIntent,
  platform: string
  ): Promise<PmResultMeta> {
- let key = intent.workItemKey;
- if (!key) {
- key = await this.pickWorkItem(stream, provider, 'Which item do you want to update status for?');
- if (!key) { stream.markdown('_Cancelled._'); return { action: 'status_cancelled' }; }
+
+ // ── Step 1: pick one or more items (multi-select, grouped by status) ───────
+ let keys: string[];
+ if (intent.workItemKey) {
+ keys = [intent.workItemKey];
+ } else {
+ const picked = await this.pickWorkItems(stream, provider, 'Select items to transition');
+ if (!picked?.length) { stream.markdown('_Cancelled._'); return { action: 'status_cancelled' }; }
+ keys = picked;
  }
 
- stream.progress(`Loading ${key}...`);
- const item = await provider.getWorkItem(key);
- stream.markdown(
- `**[${item.key}](${item.url})** ${item.title}\n` +
- `Type: ${cap(item.type)} · Currently: **${item.status}**\n\n` +
- `**New status:**`
- );
+ // ── Step 2: load items and determine available transitions ────────────────
+ stream.progress(`Loading ${keys.length > 1 ? keys.length + ' items' : keys[0]}...`);
+ const items: WorkItem[] = [];
+ for (const k of keys) {
+ try { items.push(await provider.getWorkItem(k)); }
+ catch { stream.markdown(formatError(`Could not find **${k}**`)); return { action: 'error' }; }
+ }
 
- // Fetch real states for this specific work item type
+ // Show what was selected
+ if (items.length > 1) {
+ stream.markdown(
+ `**${items.length} items selected:**\n\n` +
+ items.map(i => `- **[${i.key}](${i.url})** ${i.title} — currently **${i.status}**`).join('\n') +
+ '\n\n**New status for all:**'
+ );
+ } else {
+ stream.markdown(
+ `**[${items[0].key}](${items[0].url})** ${items[0].title}
+` +
+ `Type: ${cap(items[0].type)} · Currently: **${items[0].status}**
+
+**New status:**`
+ );
+ }
+
+ // Use the first item to fetch available transitions (all selected items
+ // should share the same workflow — if types differ, transitions still apply)
+ const referenceItem = items[0];
  let states: string[] = [];
  if (platform === 'jira') {
- // Jira transitions are fetched from the item's actual available transitions
  try {
  // eslint-disable-next-line @typescript-eslint/no-explicit-any
- const transitions = await (provider as any).getAvailableTransitions?.(key);
+ const transitions = await (provider as any).getAvailableTransitions?.(referenceItem.key);
  if (transitions?.length) { states = transitions; }
  } catch { /* fall through */ }
- if (!states.length) {
- states = ['To Do', 'In Progress', 'In Review', 'Done', 'Blocked'];
- }
+ if (!states.length) { states = ['To Do', 'In Progress', 'In Review', 'Done', 'Blocked']; }
  } else {
- // ADO: fetch states for this work item type from the API
  try {
  const adoP = provider as any;
- // Use rawTypeName from the item (exact ADO type) or fall back to a map
  const typeMap: Record<string, string> = {
  story: 'User Story', task: 'Task', bug: 'Bug', epic: 'Epic',
- feature: 'Feature', testcase: 'Test Case', subtask: 'Task'
+ feature: 'Feature', testcase: 'Test Case', subtask: 'Task',
  };
- const adoTypeName = item.rawTypeName ?? typeMap[item.type] ?? cap(item.type);
+ const adoTypeName = referenceItem.rawTypeName ?? typeMap[referenceItem.type] ?? cap(referenceItem.type);
  const fetched = await adoP.getWorkItemStates(adoTypeName);
  if (fetched.length) { states = fetched; }
  } catch { /* fall through */ }
  if (!states.length) {
- // Sensible defaults per type
  const typeDefaults: Record<string, string[]> = {
  story:   ['New', 'Active', 'Resolved', 'Closed'],
  task:    ['To Do', 'In Progress', 'Done'],
@@ -1868,47 +1978,79 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  epic:    ['New', 'In Progress', 'Resolved', 'Closed'],
  feature: ['New', 'In Progress', 'Resolved', 'Closed'],
  };
- states = typeDefaults[item.type] ?? ['New', 'Active', 'Resolved', 'Closed'];
+ states = typeDefaults[referenceItem.type] ?? ['New', 'Active', 'Resolved', 'Closed'];
  }
  }
 
+ // ── Step 3: pick target status ────────────────────────────────────────────
  let target = intent.statusHint;
  if (!target || !states.map(s => s.toLowerCase()).includes(target.toLowerCase())) {
- // Deduplicate — some Jira workflows expose the same target status via
- // multiple transition paths, producing duplicate entries in the picker.
  const unique = [...new Set(states)];
-
- // Show ALL statuses. Mark the current one rather than hiding it —
- // some workflows allow self-transitions (e.g. re-triggering a status).
+ const currentStatuses = new Set(items.map(i => i.status.toLowerCase()));
  const statusOptions = unique.map(s => ({
  label:       s,
- description: s.toLowerCase() === item.status.toLowerCase() ? '<-- current' : undefined,
+ description: currentStatuses.has(s.toLowerCase()) ? '← current' : undefined,
  }));
-
  const picked = await vscode.window.showQuickPick(statusOptions, {
- title:          `Transition ${key} — ${unique.length} status${unique.length !== 1 ? 'es' : ''} available`,
- placeHolder:    `Current: ${item.status} — pick a new status`,
+ title:          `Transition to — ${unique.length} status${unique.length !== 1 ? 'es' : ''} available`,
+ placeHolder:    `Pick the new status for ${items.length} item${items.length !== 1 ? 's' : ''}`,
  ignoreFocusOut: true,
  });
  if (!picked) { stream.markdown('_Cancelled._'); return { action: 'status_cancelled' }; }
  target = picked.label;
  }
 
+ // ── Step 4: handle blocked comment ───────────────────────────────────────
+ let blockerComment: string | undefined;
  if (target.toLowerCase() === 'blocked') {
- stream.markdown('Warning: **Why is this blocked?**');
- const blocker = await vscode.window.showInputBox({ title: 'Blocker reason', prompt: 'What is preventing progress?', ignoreFocusOut: true });
- if (blocker) { await provider.addComment(key, `BLOCKED: ${blocker}`); }
+ const blocker = await vscode.window.showInputBox({
+ title: 'Blocker reason', prompt: 'What is preventing progress?', ignoreFocusOut: true,
+ });
+ if (blocker) { blockerComment = `BLOCKED: ${blocker}`; }
  }
 
- stream.progress(`Transitioning to "${target}"...`);
- const result = await provider.transitionWorkItem(key, target);
+ // ── Step 5: transition each item ─────────────────────────────────────────
+ const succeeded: WorkItem[] = [];
+ const failed: Array<{ key: string; error: string }> = [];
+
+ for (const item of items) {
+ stream.progress(`Transitioning ${item.key} to "${target}"...`);
+ try {
+ const result = await provider.transitionWorkItem(item.key, target);
  if (result.success) {
- stream.markdown(formatSuccess(`**[${item.key}](${item.url})** moved to **${target}**`));
- if (['Done', 'Closed', 'Resolved'].includes(target)) { stream.markdown('\n'); }
- } else {
- stream.markdown(formatError(result.error ?? 'Transition failed'));
+ if (blockerComment) {
+ await provider.addComment(item.key, blockerComment).catch(() => {});
  }
- return { action: 'status_updated', itemKey: item.key, itemStatus: target };
+ succeeded.push(item);
+ } else {
+ failed.push({ key: item.key, error: result.error ?? 'Transition failed' });
+ }
+ } catch (e: unknown) {
+ failed.push({ key: item.key, error: e instanceof Error ? e.message.slice(0, 100) : String(e) });
+ }
+ }
+
+ // ── Step 6: report results ────────────────────────────────────────────────
+ if (succeeded.length) {
+ stream.markdown(
+ formatSuccess(
+ succeeded.length === 1
+ ? `**[${succeeded[0].key}](${succeeded[0].url})** moved to **${target}**`
+ : `**${succeeded.length} items** moved to **${target}**`
+ ) +
+ (succeeded.length > 1
+ ? '\n\n' + succeeded.map(i => `- [${i.key}](${i.url}) ${i.title}`).join('\n')
+ : '')
+ );
+ }
+ if (failed.length) {
+ stream.markdown(
+ `\n**Failed (${failed.length}):**\n` +
+ failed.map(f => `- **${f.key}**: ${f.error}`).join('\n')
+ );
+ }
+
+ return { action: 'status_updated', itemKey: succeeded[0]?.key, itemStatus: target };
  }
 
  // ── ATTACH ─────────────────────────────────────────────────────────────────
