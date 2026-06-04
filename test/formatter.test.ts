@@ -1,5 +1,5 @@
 // test/formatter.test.ts
-import { formatWorkItem, formatWorkItemList, formatUserList, formatSuccess, formatError } from '../src/utils/formatter';
+import { formatWorkItem, formatWorkItemList, formatWorkloadSummary, formatUserList, formatSuccess, formatError } from '../src/utils/formatter';
 import { WorkItem, User } from '../src/types';
 
 const mockItem: WorkItem = {
@@ -127,5 +127,67 @@ describe('formatter', () => {
     it('formatError wraps message', () => {
       expect(formatError('failed')).toBe('**Error:** failed');
     });
+  });
+});
+
+describe('formatWorkItemList — status grouping', () => {
+  const base = {
+    id: '1', key: 'ENG-1', title: 'A', type: 'task' as const,
+    url: 'u', platform: 'jira' as const, projectKey: 'ENG',
+  };
+  const mkItem = (key: string, status: string, assigneeName?: string) => ({
+    ...base, key, title: key,
+    status,
+    assignee: assigneeName ? { id: assigneeName, displayName: assigneeName } : undefined,
+  });
+
+  it('groups items under ### status headers', () => {
+    const items = [mkItem('ENG-1','Done'), mkItem('ENG-2','In Progress')];
+    const out = formatWorkItemList(items);
+    expect(out).toContain('### In Progress');
+    expect(out).toContain('### Done');
+    // In Progress should appear before Done
+    expect(out.indexOf('In Progress')).toBeLessThan(out.indexOf('Done'));
+  });
+
+  it('sub-groups by user when multiple assignees present', () => {
+    const items = [
+      mkItem('ENG-1', 'In Progress', 'Alice'),
+      mkItem('ENG-2', 'In Progress', 'Bob'),
+    ];
+    const out = formatWorkItemList(items);
+    expect(out).toContain('**Alice**');
+    expect(out).toContain('**Bob**');
+    // ENG-1 appears under Alice heading, ENG-2 under Bob
+    expect(out.indexOf('Alice')).toBeLessThan(out.indexOf('ENG-1'));
+    expect(out.indexOf('Bob')).toBeLessThan(out.indexOf('ENG-2'));
+  });
+});
+
+describe('formatWorkloadSummary', () => {
+  const mkItem = (key: string, status: string, pts?: number) => ({
+    id: key, key, title: key, type: 'task' as const,
+    url: 'u', platform: 'jira' as const, projectKey: 'ENG',
+    status,
+    storyPoints: pts,
+    updatedAt: new Date().toISOString(),
+  });
+
+  it('contains aggregate rollup table', () => {
+    const out = formatWorkloadSummary([
+      mkItem('ENG-1','In Progress',3),
+      mkItem('ENG-2','Done',5),
+    ], 'Alice');
+    expect(out).toContain('Total items');
+    expect(out).toContain('Story points');
+    expect(out).toContain('8 pts');
+    expect(out).toContain('## Alice');
+  });
+
+  it('flags stale items older than 14 days', () => {
+    const old = new Date(Date.now() - 20 * 86_400_000).toISOString();
+    const items = [{ ...mkItem('ENG-1','In Progress'), updatedAt: old }];
+    const out = formatWorkloadSummary(items, 'Bob');
+    expect(out).toContain('Stale');
   });
 });

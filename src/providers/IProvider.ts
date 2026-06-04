@@ -14,6 +14,7 @@ export interface IProvider {
   searchWorkItems(query: WorkItemQuery): Promise<WorkItem[]>;
   /** Optional paged search for "load more" UIs. */
   searchWorkItemsPage?(query: WorkItemQuery): Promise<WorkItemPage>;
+  deleteWorkItem?(keyOrId: string): Promise<void>;
   getWorkItem(keyOrId: string): Promise<WorkItem>;
   createWorkItem(input: CreateWorkItemInput & {
     acceptanceCriteria?: string;

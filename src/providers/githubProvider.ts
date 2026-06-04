@@ -141,6 +141,17 @@ export class GitHubProvider {
    * cursor is simply the next offset encoded as a string. We over-fetch to
    * (offset + pageSize + 1) and slice — fine for typical board sizes.
    */
+  async deleteWorkItem(keyOrId: string): Promise<void> {
+    // GitHub REST API does not support deleting issues — only closing them.
+    // We close the issue; the agent surfaces a note about this to the user.
+    const num = String(keyOrId).replace(/^#/, '');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await this.rest<any>(
+      `/repos/${this.owner}/${this.repo}/issues/${encodeURIComponent(num)}`,
+      { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) }
+    );
+  }
+
   async searchWorkItemsPage(query: WorkItemQuery): Promise<WorkItemPage> {
     const pageSize = query.maxResults ?? 25;
     const offset   = query.pageCursor ? parseInt(query.pageCursor, 10) || 0 : 0;

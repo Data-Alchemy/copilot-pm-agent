@@ -5,7 +5,7 @@ import { createProvider } from './providers/providerFactory';
 import { AdoProvider } from './providers/adoProvider';
 import { MissingFieldsError } from './providers/jiraProvider';
 import { parseIntent, ParsedIntent } from './utils/intentParser';
-import { formatWorkItem, formatWorkItemList, formatUserList, formatSuccess, formatError } from './utils/formatter';
+import { formatWorkItem, formatWorkItemList, formatWorkloadSummary, formatUserList, formatSuccess, formatError } from './utils/formatter';
 import { cap, stripHtml } from './utils/strings';
 import { WorkItem, WorkItemType, User } from './types';
 import { enhanceTicket, enhanceComment, testAiConnection, listCopilotModels, markdownToAdoHtml, generateTasksForStory, AiConfig } from './utils/aiHelper';
@@ -171,17 +171,19 @@ export class PmAgent {
  '- `@pm /debug` — verify API connection'
  );
  } else {
- const header = this.mem.defaultUser
- ? `**${items.length}** item${items.length !== 1 ? 's' : ''} assigned to **${this.mem.defaultUser.displayName}**:`
- : `**${items.length}** item${items.length !== 1 ? 's' : ''} in the project:`;
+ const who = this.mem.defaultUser?.displayName;
+ const header = who
+ ? `${items.length} item${items.length !== 1 ? 's' : ''} assigned to ${who}`
+ : `${items.length} item${items.length !== 1 ? 's' : ''} in the project`;
+ // Items are grouped by status (in-progress first) via formatWorkItemList
  stream.markdown(formatWorkItemList(items, header));
  if (items.length >= (q.maxResults ?? 200)) {
  stream.markdown(
  `\n_Showing the first **${items.length}**. There may be more — narrow with a filter ` +
- '(e.g. `@pm list bugs in progress`) or open the Chat panel (**PM Agent: Open Chat**) and use **Load more**._\n'
+ '(e.g. `@pm list bugs in progress`) or use **Load more** in the Chat panel._\n'
  );
  }
- stream.markdown('\n_Click any key to open in browser · `@pm comment AB#123` to comment · `@pm summary` for overview_');
+ stream.markdown('\n_`@pm /summary` for an aggregate overview · `@pm comment KEY` to comment_');
  }
  meta = { action: 'listed', itemCount: items.length };
  break;
@@ -277,6 +279,11 @@ export class PmAgent {
 
  case 'move': {
  meta = await this.handleMove(stream, provider, intent, creds.platform);
+ break;
+ }
+
+ case 'delete': {
+ meta = await this.handleDelete(stream, intent, provider, creds.platform);
  break;
  }
 
@@ -1865,12 +1872,22 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
 
  let target = intent.statusHint;
  if (!target || !states.map(s => s.toLowerCase()).includes(target.toLowerCase())) {
- const picked = await vscode.window.showQuickPick(
- states
- .filter(s => s.toLowerCase() !== item.status.toLowerCase())
- .map(s => ({ label: s })),
- { title: `Transition ${key} from "${item.status}"`, ignoreFocusOut: true }
- );
+ // Deduplicate — some Jira workflows expose the same target status via
+ // multiple transition paths, producing duplicate entries in the picker.
+ const unique = [...new Set(states)];
+
+ // Show ALL statuses. Mark the current one rather than hiding it —
+ // some workflows allow self-transitions (e.g. re-triggering a status).
+ const statusOptions = unique.map(s => ({
+ label:       s,
+ description: s.toLowerCase() === item.status.toLowerCase() ? '<-- current' : undefined,
+ }));
+
+ const picked = await vscode.window.showQuickPick(statusOptions, {
+ title:          `Transition ${key} — ${unique.length} status${unique.length !== 1 ? 'es' : ''} available`,
+ placeHolder:    `Current: ${item.status} — pick a new status`,
+ ignoreFocusOut: true,
+ });
  if (!picked) { stream.markdown('_Cancelled._'); return { action: 'status_cancelled' }; }
  target = picked.label;
  }
@@ -1955,20 +1972,7 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  return { action: 'summary_empty' };
  }
 
- const byStatus: Record<string, typeof items> = {};
- for (const i of items) {
- (byStatus[i.status] = byStatus[i.status] ?? []).push(i);
- }
- const totalPts = items.reduce((s: number, i: any) => s + (i.storyPoints ?? i.effort ?? 0), 0);
-
- stream.markdown(
- `## ${userName}'s Work Summary\n\n` +
- `**${items.length} item${items.length !== 1 ? 's' : ''} · ${totalPts} total pts**\n\n` +
- Object.entries(byStatus).map(([status, its]) =>
- `**${status}** (${its.length})\n` +
- its.map((i: any) => `- [${i.key}](${i.url}) ${i.title}${i.storyPoints ? ` · ${i.storyPoints}pts` : ''}`).join('\n')
- ).join('\n\n')
- );
+ stream.markdown(formatWorkloadSummary(items, userName));
  return { action: 'summary_all', itemCount: items.length };
  }
 
@@ -2911,6 +2915,145 @@ _Using AI-suggested types per task: ${tasksToCreate.map((t, i) => `${t.title} �
  '| `@pm show current sprint` | Sprint overview |\n' +
  '| `@pm /debug` | Test API + show team members |\n'
  );
+ }
+
+ // ── DELETE ────────────────────────────────────────────────────────────────
+
+ private async handleDelete(
+ stream: vscode.ChatResponseStream,
+ intent: import('./utils/intentParser').ParsedIntent,
+ provider: ReturnType<typeof createProvider>,
+ platform: string
+ ): Promise<PmResultMeta> {
+
+ // ── Step 1: build the list of issues to delete ─────────────────────────
+ // If a specific key was given, fetch just that one.
+ // Otherwise show a multi-select picker from recent items.
+ let candidates: WorkItem[] = [];
+
+ if (intent.workItemKey) {
+ stream.progress('Fetching item...');
+ try {
+ const item = await provider.getWorkItem(intent.workItemKey);
+ candidates = [item];
+ } catch {
+ stream.markdown(formatError(`Could not find **${intent.workItemKey}**. Check the key and try again.`));
+ return { action: 'error' };
+ }
+ } else {
+ stream.progress('Loading your items...');
+ try {
+ const assigneeId = this.mem.defaultUser?.id ?? '@me';
+ candidates = await provider.searchWorkItems({ assigneeId, maxResults: 200 });
+ } catch {
+ stream.markdown(formatError('Could not load items. Run `@pm /debug` to verify your connection.'));
+ return { action: 'error' };
+ }
+ if (!candidates.length) {
+ stream.markdown('_No items found. Try `@pm /list` to check your connection._');
+ return { action: 'error' };
+ }
+ }
+
+ // Multi-select picker — user chooses which items to delete
+ type ItemOpt = vscode.QuickPickItem & { item: WorkItem };
+ const opts: ItemOpt[] = candidates.map(wi => ({
+ label: `${wi.key} — ${wi.title}`,
+ description: [cap(wi.type), wi.status, wi.storyPoints ? `${wi.storyPoints} pts` : ''].filter(Boolean).join(' · '),
+ item: wi,
+ picked: !!intent.workItemKey,
+ }));
+
+ const selected = await vscode.window.showQuickPick<ItemOpt>(opts, {
+ title: 'Select issues to delete',
+ placeHolder: 'Space to select, Enter to confirm',
+ canPickMany: true,
+ ignoreFocusOut: true,
+ });
+ if (!selected?.length) {
+ stream.markdown('_Cancelled._');
+ return { action: 'error' };
+ }
+
+ const toDelete = selected.map(s => s.item);
+ const keyList  = toDelete.map(i => `**${i.key}**`).join(', ');
+
+ // ── CONFIRMATION 1: show exactly what will be deleted ─────────────────
+ stream.markdown(
+ `**You are about to delete ${toDelete.length} issue${toDelete.length !== 1 ? 's' : ''}:**\n\n` +
+ toDelete.map(i => `- **[${i.key}](${i.url})** — ${i.title}  *(${cap(i.type)} · ${i.status})*`).join('\n') +
+ `\n\n> ⚠️ **This is permanent. Deleted issues cannot be recovered.**`
+ );
+
+ const confirm1 = await vscode.window.showQuickPick(
+ [
+ { label: `$(trash) Yes, delete ${toDelete.length} issue${toDelete.length !== 1 ? 's' : ''}`, value: 'yes' },
+ { label: '$(close) Cancel', value: 'no' },
+ ],
+ { title: `Delete ${toDelete.length} issue${toDelete.length !== 1 ? 's' : ''}? — Confirmation 1 of 2`, ignoreFocusOut: true }
+ );
+ if (!confirm1 || confirm1.value === 'no') {
+ stream.markdown('_Cancelled — nothing was deleted._');
+ return { action: 'error' };
+ }
+
+ // ── CONFIRMATION 2: final safety check with issue list ────────────────
+ const confirm2 = await vscode.window.showQuickPick(
+ [
+ { label: `$(warning) I understand — permanently delete ${keyList}`, value: 'yes' },
+ { label: '$(close) Cancel — keep my issues', value: 'no' },
+ ],
+ {
+ title: `⚠️ Final confirmation — this cannot be undone`,
+ placeHolder: `Deleting: ${toDelete.map(i => i.key).join(', ')}`,
+ ignoreFocusOut: true,
+ }
+ );
+ if (!confirm2 || confirm2.value === 'no') {
+ stream.markdown('_Cancelled — nothing was deleted._');
+ return { action: 'error' };
+ }
+
+ // ── Delete each issue ──────────────────────────────────────────────────
+ const deleted:  WorkItem[] = [];
+ const failed:   Array<{ key: string; error: string }> = [];
+
+ for (const item of toDelete) {
+ stream.progress(`Deleting ${item.key}...`);
+ try {
+ if (typeof (provider as any).deleteWorkItem === 'function') {
+ await (provider as any).deleteWorkItem(item.key);
+ deleted.push(item);
+ } else {
+ failed.push({ key: item.key, error: `${platform} does not support deletion` });
+ }
+ } catch (e: unknown) {
+ const msg = e instanceof Error ? e.message.slice(0, 120) : String(e);
+ failed.push({ key: item.key, error: msg });
+ }
+ }
+
+ // ── Report ─────────────────────────────────────────────────────────────
+ if (deleted.length) {
+ const note = platform === 'github'
+ ? '\n\n_Note: GitHub does not support issue deletion — issues were **closed** instead._'
+ : '';
+ stream.markdown(
+ formatSuccess(`Deleted **${deleted.length}** issue${deleted.length !== 1 ? 's' : ''}`) +
+ '\n\n' +
+ deleted.map(i => `- ~~${i.key}~~ — ${i.title}`).join('\n') +
+ note
+ );
+ }
+ if (failed.length) {
+ stream.markdown(
+ `\n**Failed (${failed.length}):**\n` +
+ failed.map(f => `- **${f.key}**: ${f.error}`).join('\n') +
+ '\n\n_Common reasons: you need **Delete Issues** project permission; issues with sub-tasks may require elevated access._'
+ );
+ }
+
+ return { action: 'deleted' as any, itemCount: deleted.length };
  }
 }
 

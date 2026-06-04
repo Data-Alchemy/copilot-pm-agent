@@ -564,6 +564,15 @@ export class AdoProvider {
     }
   }
 
+  async deleteWorkItem(keyOrId: string): Promise<void> {
+    // ADO work-item IDs are numeric. The key can be "#1234" or "1234".
+    const id = String(keyOrId).replace(/^#/, '');
+    await this.http<void>(
+      `${this.orgUrl}/_apis/wit/workitems/${encodeURIComponent(id)}?destroy=true&api-version=7.1`,
+      { method: 'DELETE' }
+    );
+  }
+
   async debugQuery(wiql: string): Promise<{ wiql: string; url: string; ids: number[]; firstItem: unknown }> {
     const url = `${this.orgUrl}/${this.projectEnc}/_apis/wit/wiql?$top=5&api-version=7.1`;
     const r   = await this.http<{ workItems?: Array<{ id: number }> }>(url, { method: 'POST', body: JSON.stringify({ query: wiql }) });

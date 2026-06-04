@@ -583,6 +583,16 @@ export class JiraProvider {
     }
   }
 
+  /** Permanently delete an issue and all its sub-tasks */
+  async deleteWorkItem(keyOrId: string): Promise<void> {
+    // Jira DELETE /issue/:key returns 204 on success.
+    // deleteSubtasks=true also removes child issues; without it the call
+    // fails with 400 if the issue has sub-tasks.
+    await this.http(`/issue/${encodeURIComponent(keyOrId)}?deleteSubtasks=true`, {
+      method: 'DELETE',
+    });
+  }
+
   /** Expose http for agent-level calls (e.g. sprint update in /move) */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async callApi(path: string, options: RequestInit = {}): Promise<any> {
@@ -594,8 +604,11 @@ export class JiraProvider {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { transitions } = await this.http<any>(`/issue/${encodeURIComponent(keyOrId)}/transitions`);
+      // t.to.name is the target status name (what we want to show the user).
+      // Multiple transition paths can lead to the same status — deduplicate.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (transitions ?? []).map((t: any) => String(t.to?.name ?? t.name ?? '')).filter(Boolean);
+      const names = (transitions ?? []).map((t: any) => String(t.to?.name ?? t.name ?? '')).filter(Boolean);
+      return [...new Set(names)] as string[];
     } catch { return []; }
   }
 

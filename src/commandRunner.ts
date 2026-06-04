@@ -8,6 +8,7 @@ import { createProvider } from './providers/providerFactory';
 import { AdoProvider } from './providers/adoProvider';
 import { WorkItem } from './types';
 import { cap, stripHtml } from './utils/strings';
+import { formatWorkItemList } from './utils/formatter';
 
 
 export class CommandRunner {
@@ -156,14 +157,7 @@ export class CommandRunner {
     const filtered = await this.filterItems(items, `${label}'s items`);
     if (!filtered) { return '_Cancelled._'; }
 
-    const lines = filtered.slice(0, 30).map(wi =>
-      `- **[${wi.key}](${wi.url})** ${wi.title} \`${wi.status}\`` +
-      (wi.rawTypeName ? ` · ${wi.rawTypeName}` : '') +
-      (wi.storyPoints ? ` · ${wi.storyPoints}pts` : '') +
-      (wi.assignee ? ` — ${wi.assignee.displayName}` : '')
-    ).join('\n');
-
-    return `**${label}'s items (${filtered.length}):**\n\n${lines}`;
+    return formatWorkItemList(filtered, `${filtered.length} item${filtered.length !== 1 ? 's' : ''} — ${label}`);
   }
 
   // ── OPEN ─────────────────────────────────────────────────────────────────

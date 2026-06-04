@@ -4,7 +4,7 @@ import { WorkItemType, WorkItemQuery, CreateWorkItemInput, UpdateWorkItemInput }
 export type IntentKind =
   | 'list' | 'open' | 'create' | 'comment' | 'status'
   | 'attach' | 'summary' | 'estimate' | 'assign'
-  | 'members' | 'sprint' | 'debug' | 'setuser' | 'setupai' | 'parent' | 'move' | 'migrate' | 'unknown';
+  | 'members' | 'sprint' | 'debug' | 'setuser' | 'setupai' | 'parent' | 'move' | 'migrate' | 'delete' | 'unknown';
 
 export interface ParsedIntent {
   kind:           IntentKind;
@@ -63,8 +63,10 @@ export function parseIntent(command: string | undefined, text: string): ParsedIn
   if (command === 'parent')   { return { kind: 'parent',   workItemKey: extractKey(text), raw }; }
   if (command === 'move')     { return { kind: 'move',     workItemKey: extractKey(text), raw }; }
   if (command === 'migrate')  { return { kind: 'migrate',   workItemKey: extractKey(text), raw }; }
+  if (command === 'delete')   { return { kind: 'delete',    workItemKey: extractKey(text), raw }; }
 
   // Natural language — most specific first
+  if (/\b(delete|remove|purge)\b.*(issue|ticket|task|story|bug|epic)/.test(lower)) { return { kind: 'delete', workItemKey: extractKey(text), raw }; }
   if (/\b(debug|diagnose|test connection|troubleshoot)\b/.test(lower)) { return { kind: 'debug', raw }; }
   if (/\b(set (default )?user|change user|switch user|who am i|my user|set me as)\b/.test(lower)) { return { kind: 'setuser', raw }; }
   if (/\b(setup? ai|configure ai|ai provider|ai key|ai token|enable ai)\b/.test(lower)) { return { kind: 'setupai', raw }; }
